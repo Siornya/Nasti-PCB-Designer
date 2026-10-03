@@ -40,9 +40,31 @@ void ImageStore::clear() {
 static QImage display(const cv::Mat& binary) {
 	return QImage(binary.data, binary.cols, binary.rows, int(binary.step), QImage::Format_Grayscale8).copy();
 }
+static QImage renderSilk(const QImage& original, const cv::Mat& edges,
+	const binarizer::Options& options) {
+	if (edges.empty() && !options.flipHorizontal && !options.flipVertical) return {};
+	QImage result = original.convertToFormat(QImage::Format_ARGB32);
+	if (options.flipHorizontal || options.flipVertical)
+		result = result.mirrored(options.flipHorizontal, options.flipVertical);
+	if (edges.empty()) return result;
+	if (edges.type() != CV_8UC1 || edges.cols != result.width() || edges.rows != result.height())
+		throw std::invalid_argument("Silkscreen image and edge mask dimensions differ");
+	for (int y = 0; y < result.height(); ++y) {
+		QRgb* outputLine = reinterpret_cast<QRgb*>(result.scanLine(y));
+		const auto* edgeLine = edges.ptr<unsigned char>(y);
+		for (int x = 0; x < result.width(); ++x) {
+			if (!edgeLine[x]) continue;
+			const QRgb base = outputLine[x];
+			outputLine[x] = qAlpha(base) < 128 || qGray(base) > 127
+				? qRgb(0, 0, 0) : qRgb(255, 255, 255);
+		}
+	}
+	return result;
+}
 struct Comparison {
 	cv::Mat source;
 	QImage original;
+	QImage silk;
 	int dotsPerMeterX = 0;
 	int dotsPerMeterY = 0;
 	bool hasPhysicalResolution = false;
@@ -53,6 +75,7 @@ struct Comparison {
 };
 struct Applied {
 	QImage image;
+	QImage silk;
 	QString error;
 };
 
@@ -81,8 +104,10 @@ void Controller::invalidate() {
 	rows.clear();
 	result.clear();
 	output = {};
-	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size()))
+	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())) {
 		artworkLayers[selectedLayer].outputImage = {};
+		artworkLayers[selectedLayer].silkImage = {};
+	}
 	refreshLayerPresentation();
 	message = QStringLiteral("设置已更新，请点击 Try All 重新比较");
 	emit changed();
@@ -105,7 +130,10 @@ QVariantMap Controller::selectedParameters() const {
 		{"denoiseMethod", options.denoiseMethod}, {"denoiseStrength", options.denoiseStrength},
 		{"smooth", options.smooth}, {"sharpen", options.sharpen},
 		{"detail", options.detail}, {"edge", options.edge},
-		{"localContrast", options.localContrast}, {"equalize", options.equalize},
+		{"localContrast", options.localContrast}, {"extractEdges", options.extractEdges},
+		{"edgeLowThreshold", options.edgeLowThreshold},
+		{"edgeHighThreshold", options.edgeHighThreshold},
+		{"edgeWidth", options.edgeWidth}, {"equalize", options.equalize},
 		{"clahe", options.clahe}, {"invert", options.invert},
 		{"flipHorizontal", options.flipHorizontal}, {"flipVertical", options.flipVertical}
 	};
@@ -158,6 +186,10 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	requestedSettings.detail = p.value("detail", 0).toInt();
 	requestedSettings.edge = p.value("edge", 0).toInt();
 	requestedSettings.localContrast = p.value("localContrast", 0).toInt();
+	requestedSettings.extractEdges = p.value("extractEdges", false).toBool();
+	requestedSettings.edgeLowThreshold = p.value("edgeLowThreshold", 50).toInt();
+	requestedSettings.edgeHighThreshold = p.value("edgeHighThreshold", 150).toInt();
+	requestedSettings.edgeWidth = p.value("edgeWidth", 2).toInt();
 	requestedSettings.equalize = p.value("equalize", false).toBool();
 	requestedSettings.clahe = p.value("clahe", false).toBool();
 	requestedSettings.invert = p.value("invert", false).toBool();
@@ -184,6 +216,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 		active = false;
 		if (stop->load()) message = QStringLiteral("已取消");
 		else if (!batch.error.isEmpty()) message = batch.error;
+		else if (singleMethod >= 0 && !batch.errors.front().isEmpty()) message = batch.errors.front();
 		else {
 			int targetIndex = -1;
 			const QSize placementCanvas = canvasSize();
@@ -205,9 +238,14 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				return;
 			}
 			auto& layer = artworkLayers[targetIndex];
+			if (layer.originalImage != batch.original) {
+				layer.outputImage = {};
+				layer.silkImage = {};
+			}
 			layer.sourceImage = batch.source;
 			layer.originalImage = batch.original;
-			layer.settings = requestedSettings;
+			if (singleMethod >= 0) layer.silkImage = batch.silk;
+			if (singleMethod >= 0 || createLayer) layer.settings = requestedSettings;
 			layer.dotsPerMeterX = batch.dotsPerMeterX;
 			layer.dotsPerMeterY = batch.dotsPerMeterY;
 			layer.hasPhysicalResolution = batch.hasPhysicalResolution;
@@ -228,12 +266,9 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			images->put(key, batch.original);
 			original = "image://results/" + key;
 			if (singleMethod >= 0) {
-				if (!batch.errors.front().isEmpty()) message = batch.errors.front();
-				else {
-					layer.outputImage = batch.previews.front();
-					message = QStringLiteral("图层“%1”处理完成：%2 × %3")
-						.arg(layer.name).arg(layer.outputImage.width()).arg(layer.outputImage.height());
-				}
+				layer.outputImage = batch.previews.front();
+				message = QStringLiteral("图层“%1”处理完成：%2 × %3")
+					.arg(layer.name).arg(layer.outputImage.width()).arg(layer.outputImage.height());
 				loadSelectedLayer();
 				refreshLayerPresentation();
 				emit changed();
@@ -259,6 +294,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			}
 			message = QStringLiteral("选择一个方案，以原始分辨率重新处理。局部算法的缩略预览与原图细节可能不同。");
 			loadSelectedLayer();
+			// Comparing alternatives does not replace the layer until a candidate is applied.
+			settings = requestedSettings;
 			refreshLayerPresentation();
 		}
 		emit changed();
@@ -285,6 +322,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			batch.original = image;
 			if (stop->load()) return batch;
 			const auto gray = binarizer::preprocess(batch.source, options);
+			const cv::Mat edges = options.extractEdges ? binarizer::edgeMask(gray, batch.source, options) : cv::Mat();
 			for (int index = 0; index < int(binarizer::methods.size()); ++index) {
 				if (stop->load()) break;
 				if (singleMethod >= 0 && index != singleMethod) continue;
@@ -293,7 +331,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				candidate.method = method;
 				double thresholdValue = std::numeric_limits<double>::quiet_NaN();
 				try {
-					batch.previews.push_back(display(binarizer::threshold(gray, candidate, &thresholdValue)));
+					batch.previews.push_back(display(binarizer::overlayEdges(
+						binarizer::threshold(gray, candidate, &thresholdValue), edges)));
 					batch.errors.emplace_back();
 				} catch (const std::exception& error) {
 					batch.previews.emplace_back();
@@ -301,6 +340,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				}
 				batch.thresholds.push_back(thresholdValue);
 			}
+			if (singleMethod >= 0 && !stop->load())
+				batch.silk = renderSilk(batch.original, edges, options);
 		} catch (const std::exception& error) { batch.error = QString::fromUtf8(error.what()); }
 		return batch;
 	}));
@@ -332,6 +373,7 @@ void Controller::apply(int index) {
 				if (artworkLayers[layerIndex].id != targetLayerId) continue;
 				selectedLayer = layerIndex;
 				artworkLayers[layerIndex].outputImage = applied.image;
+				artworkLayers[layerIndex].silkImage = applied.silk;
 				artworkLayers[layerIndex].settings = options;
 				break;
 			}
@@ -342,10 +384,16 @@ void Controller::apply(int index) {
 		}
 		emit changed();
 	});
-	watcher->setFuture(QtConcurrent::run([source, options, stop] {
+	const QImage originalImage = artworkLayers[selectedLayer].originalImage;
+	watcher->setFuture(QtConcurrent::run([source, originalImage, options, stop] {
 		Applied applied;
 		try {
-			if (!stop->load()) applied.image = display(binarizer::process(source, options));
+			if (!stop->load()) {
+				const cv::Mat gray = binarizer::preprocess(source, options);
+				const cv::Mat edges = options.extractEdges ? binarizer::edgeMask(gray, source, options) : cv::Mat();
+				applied.image = display(binarizer::overlayEdges(binarizer::threshold(gray, options), edges));
+				applied.silk = renderSilk(originalImage, edges, options);
+			}
 		} catch (const std::exception& error) { applied.error = QString::fromUtf8(error.what()); }
 		return applied;
 	}));
@@ -528,7 +576,8 @@ void Controller::refreshLayerPresentation() {
 		const auto& layer = artworkLayers[index];
 		QString thumbnail;
 		const QImage thumbnailImage = layer.type == QStringLiteral("silk")
-			? layer.originalImage : layer.outputImage;
+			? (layer.silkImage.isNull() ? layer.originalImage : layer.silkImage)
+			: layer.outputImage;
 		if (!thumbnailImage.isNull()) {
 			const QString key = QStringLiteral("layer/%1").arg(layer.id);
 			images->put(key, thumbnailImage);
@@ -569,7 +618,7 @@ void Controller::refreshLayerPresentation() {
 		if (!layer.visible || layer.side != activeSideValue) continue;
 		if (layer.type == QStringLiteral("silk")) {
 			if (layer.originalImage.isNull()) continue;
-			QImage source = layer.originalImage;
+			QImage source = layer.silkImage.isNull() ? layer.originalImage : layer.silkImage;
 			if (scale < 1.0)
 				source = source.scaled(std::max(1, int(source.width() * scale)),
 					std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -696,7 +745,8 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		const auto& layer = artworkLayers[index];
 		if (!layer.visible) continue;
 		const QImage& image = layer.type == QStringLiteral("silk")
-			? layer.originalImage : layer.outputImage;
+			? (layer.silkImage.isNull() ? layer.originalImage : layer.silkImage)
+			: layer.outputImage;
 		if (image.isNull()) continue;
 		const QString path = QDir(pcbTemporaryDirectory->path())
 			.filePath(QStringLiteral("layer-%1.png").arg(index));

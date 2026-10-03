@@ -13,6 +13,15 @@
 static void check(bool condition, const char* message) {
 	if (!condition) throw std::runtime_error(message);
 }
+static bool hasOutline(const QImage& image, const QRect& area) {
+	const auto region = area.intersected(image.rect());
+	for (int y = region.top(); y <= region.bottom(); ++y)
+		for (int x = region.left(); x <= region.right(); ++x) {
+			const auto pixel = image.pixel(x, y);
+			if (qAlpha(pixel) > 0 && qGray(pixel) < 128) return true;
+		}
+	return false;
+}
 static void wait(Controller& controller) {
 	QElapsedTimer timer;
 	timer.start();
@@ -43,13 +52,23 @@ int main(int argc, char** argv) {
 		const auto input = directory.filePath(QStringLiteral("input.png"));
 		check(source.save(input), "Cannot create input image");
 		const auto url = QUrl::fromLocalFile(input);
-		controller.preview(url, {}, 0);
+		controller.preview(url, QVariantMap{{"threshold", 0}, {"extractEdges", true},
+			{"edgeLowThreshold", 50}, {"edgeHighThreshold", 150}, {"edgeWidth", 1}}, 0);
 		wait(controller);
 		const auto output = directory.filePath(QStringLiteral("output.png"));
 		controller.save(QUrl::fromLocalFile(output));
 		const QImage processed(output);
 		check(!processed.isNull(), "Image processing did not produce a readable image");
+		// Previously, exterior-only extraction filled the artwork and lost internal lines.
+		check(hasOutline(processed, QRect(12, 22, 8, 6))
+			&& hasOutline(processed, QRect(24, 29, 7, 4))
+			&& processed.pixelColor(20, 20) == QColor(Qt::white),
+			"Extracted edges lost the transparent boundary, internal line or unfilled interior");
 		controller.setLayerType(controller.selectedLayerIndex(), QStringLiteral("silk"));
+		// The silkscreen preview previously bypassed the processed artwork.
+		const auto thumbnail = controller.layerRows().front().toMap().value("thumbnail").toString();
+		const QImage silk = images->requestImage(thumbnail.mid(QStringLiteral("image://results/").size()), nullptr, {});
+		check(hasOutline(silk, QRect(12, 22, 8, 6)), "Silkscreen preview omitted the extracted outline");
 		controller.generatePcb(url, directory.path());
 		wait(controller);
 		QFile pcb(directory.filePath(QStringLiteral("input.epro2")));

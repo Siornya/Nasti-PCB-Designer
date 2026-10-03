@@ -26,7 +26,10 @@ static void validate(const Options& o) {
 		|| !std::isfinite(o.adaptiveC) || std::abs(o.adaptiveC) > 100
 		|| !std::isfinite(o.localK) || std::abs(o.localK) > 1
 		|| std::abs(o.exposure) > 100 || std::abs(o.contrast) > 100
-		|| o.denoiseMethod < 0 || o.denoiseMethod > 3)
+		|| o.denoiseMethod < 0 || o.denoiseMethod > 3
+		|| o.edgeLowThreshold < 0 || o.edgeLowThreshold > 1000
+		|| o.edgeHighThreshold < 0 || o.edgeHighThreshold > 1000
+		|| o.edgeWidth < 1 || o.edgeWidth > 100)
 		throw std::invalid_argument("Invalid binarization parameters");
 	for (int value : {o.denoiseStrength, o.smooth, o.sharpen, o.detail, o.edge, o.localContrast})
 		if (value < 0 || value > 100) throw std::invalid_argument("Strength must be 0..100");
@@ -208,6 +211,59 @@ cv::Mat threshold(const cv::Mat& gray, const Options& o, double* thresholdValue)
 	return binary;
 }
 cv::Mat process(const cv::Mat& source, const Options& options) {
-	return threshold(preprocess(source, options), options);
+	const cv::Mat gray = preprocess(source, options);
+	return finish(threshold(gray, options), gray, source, options);
+}
+cv::Mat edgeMask(const cv::Mat& gray, const cv::Mat& source, const Options& options) {
+	validate(options);
+	if (gray.empty() || gray.type() != CV_8UC1)
+		throw std::invalid_argument("Expected grayscale image");
+	if (source.empty() || source.depth() != CV_8U || (source.channels() != 1
+		&& source.channels() != 3 && source.channels() != 4))
+		throw std::invalid_argument("Expected gray, BGR or BGRA source image");
+	if (!options.extractEdges) return cv::Mat::zeros(gray.size(), CV_8UC1);
+	cv::Mat edges;
+	const int low = std::min(options.edgeLowThreshold, options.edgeHighThreshold);
+	const int high = std::max(options.edgeLowThreshold, options.edgeHighThreshold);
+	cv::Canny(gray, edges, low, high);
+	if (source.channels() == 4) {
+		cv::Mat alpha;
+		cv::extractChannel(source, alpha, 3);
+		double minimum;
+		cv::minMaxLoc(alpha, &minimum);
+		if (minimum < 255) {
+			// Alpha retains the boundary of light-colored transparent artwork.
+			if (alpha.size() != gray.size())
+				cv::resize(alpha, alpha, gray.size(), 0, 0, cv::INTER_AREA);
+			cv::Mat alphaEdges;
+			cv::Canny(alpha, alphaEdges, low, high);
+			cv::bitwise_or(edges, alphaEdges, edges);
+		}
+	}
+	const double scale = double(gray.cols) / source.cols;
+	const int width = std::max(1, int(std::lround(options.edgeWidth * scale)));
+	if (width > 1) cv::dilate(edges, edges,
+		cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(width, width)));
+	if (options.flipHorizontal) cv::flip(edges, edges, 1);
+	if (options.flipVertical) cv::flip(edges, edges, 0);
+	return edges;
+}
+cv::Mat overlayEdges(const cv::Mat& binary, const cv::Mat& edges) {
+	if (binary.empty() || binary.type() != CV_8UC1)
+		throw std::invalid_argument("Expected binary grayscale image");
+	if (edges.empty()) return binary;
+	if (edges.type() != CV_8UC1 || edges.size() != binary.size())
+		throw std::invalid_argument("Expected an equally sized edge mask");
+	cv::Mat result = binary.clone();
+	result.setTo(0, edges);
+	return result;
+}
+cv::Mat finish(const cv::Mat& binary, const cv::Mat& gray, const cv::Mat& source, const Options& options) {
+	validate(options);
+	if (binary.empty() || binary.type() != CV_8UC1 || gray.type() != CV_8UC1
+		|| binary.size() != gray.size())
+		throw std::invalid_argument("Expected equally sized grayscale images");
+	if (!options.extractEdges) return binary;
+	return overlayEdges(binary, edgeMask(gray, source, options));
 }
 }

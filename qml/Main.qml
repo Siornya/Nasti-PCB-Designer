@@ -57,6 +57,8 @@ ApplicationWindow {
 			denoiseMethod: denoise.currentIndex, denoiseStrength: strength.value,
 			smooth: smooth.value, sharpen: sharpen.value, detail: detail.value,
 			edge: edge.value, localContrast: localContrast.value,
+			extractEdges: extractEdges.checked, edgeLowThreshold: edgeLowThreshold.value,
+			edgeHighThreshold: edgeHighThreshold.value, edgeWidth: edgeWidth.value,
 			equalize: equalize.checked, clahe: clahe.checked, invert: invert.checked,
 			flipHorizontal: horizontal.checked, flipVertical: vertical.checked }
 	}
@@ -102,6 +104,10 @@ ApplicationWindow {
 		detail.value = values.detail
 		edge.value = values.edge
 		localContrast.value = values.localContrast
+		extractEdges.checked = values.extractEdges
+		edgeLowThreshold.value = values.edgeLowThreshold
+		edgeHighThreshold.value = values.edgeHighThreshold
+		edgeWidth.value = values.edgeWidth
 		equalize.checked = values.equalize
 		clahe.checked = values.clahe
 		invert.checked = values.invert
@@ -398,10 +404,64 @@ ApplicationWindow {
 							}
 							Label { text: "细节" }
 							ValueSlider { id: detail }
-							Label { text: "边缘" }
+							Label { text: "边缘增强" }
 							ValueSlider { id: edge }
 							Label { text: "局部对比度" }
 							ValueSlider { id: localContrast }
+						}
+					}
+					ControlsGroup {
+						title: "边缘提取"
+						GridLayout {
+							anchors.fill: parent
+							columns: 2
+							CheckBox {
+								id: extractEdges
+								text: "提取并叠加边缘（Canny）"
+								Layout.columnSpan: 2
+								onClicked: window.requestPreview()
+							}
+							Label { text: "低阈值"; enabled: extractEdges.checked }
+							SpinBox {
+								id: edgeLowThreshold
+								Layout.fillWidth: true
+								from: 0
+								to: 1000
+								value: 50
+								editable: true
+								enabled: extractEdges.checked
+								onValueModified: window.requestPreview()
+							}
+							Label { text: "高阈值"; enabled: extractEdges.checked }
+							SpinBox {
+								id: edgeHighThreshold
+								Layout.fillWidth: true
+								from: 0
+								to: 1000
+								value: 150
+								editable: true
+								enabled: extractEdges.checked
+								onValueModified: window.requestPreview()
+							}
+							Label { text: "描边宽度"; enabled: extractEdges.checked }
+							SpinBox {
+								id: edgeWidth
+								Layout.fillWidth: true
+								from: 1
+								to: 100
+								value: 2
+								editable: true
+								enabled: extractEdges.checked
+								onValueModified: window.requestPreview()
+							}
+							Label {
+								text: "沉金叠加到二值图，丝印叠加到原色图；可提取内部线条"
+								Layout.columnSpan: 2
+								Layout.fillWidth: true
+								wrapMode: Text.WordWrap
+								font.pixelSize: 12
+								color: window.mutedTextColor
+							}
 						}
 					}
 					ControlsGroup {

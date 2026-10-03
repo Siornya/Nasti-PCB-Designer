@@ -95,6 +95,7 @@ private:
 		cv::Mat sourceImage;
 		QImage originalImage;
 		QImage outputImage;
+		QImage silkImage;
 		binarizer::Options settings;
 		int dotsPerMeterX = 0;
 		int dotsPerMeterY = 0;
