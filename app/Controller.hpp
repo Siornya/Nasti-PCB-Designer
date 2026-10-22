@@ -96,6 +96,7 @@ private:
 		QImage originalImage;
 		QImage outputImage;
 		QImage silkImage;
+		QImage outlineImage;
 		binarizer::Options settings;
 		int dotsPerMeterX = 0;
 		int dotsPerMeterY = 0;
@@ -110,6 +111,8 @@ private:
 	int& selectedLayerIdForSide(const QString& side);
 	int selectedLayerIdForSide(const QString& side) const;
 	QSize layerSize(const ArtworkLayer& layer) const;
+	const QImage& binaryImage(const ArtworkLayer& layer) const;
+	const QImage& artworkImage(const ArtworkLayer& layer) const;
 	QSize canvasSize() const;
 	ImageStore* images;
 	bool active = false;

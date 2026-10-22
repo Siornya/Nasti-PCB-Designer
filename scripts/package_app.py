@@ -80,7 +80,7 @@ def main() -> None:
 			if not archive.namelist() or archive.testzip() is not None:
 				raise RuntimeError("Bundled exporter produced an invalid PCB archive")
 		screenshot = working / "smoke.png"
-		subprocess.run([str(app), "--input", str(image), "--smoke-screenshot", str(screenshot)],
+		subprocess.run([str(app), "--smoke-screenshot", str(screenshot)],
 			cwd=working, env=environment, check=True, timeout=60)
 		if not screenshot.is_file() or screenshot.stat().st_size == 0:
 			raise RuntimeError("Packaged Qt app did not render its QML scene")

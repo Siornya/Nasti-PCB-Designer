@@ -7,10 +7,11 @@
 ## 功能
 
 - 分开管理 PCB 正面和背面的多张图片图层，分别调整位置、显示状态和叠放顺序。
-- 每个图层可选择沉金或彩色丝印。
+- 每个图层可选择沉金、彩色丝印或描边。描边图层仅保留轮廓，按沉金导出，可与保留原图的丝印图层叠放。
 - 提供 8 种阈值方法，包括 Triangle 和 Li 自动阈值；Try All 使用双列大图、显示自动计算的阈值，并可直接调整算法参数后重新比较。
 - 调整曝光、对比度、伽马、降噪、锐化和局部增强等参数。
 - 沉金和丝印图层都可选择用 Canny 提取并叠加图案边缘；可调节双阈值和描边宽度，默认线宽 2 px。沉金保留原有二值化结果，丝印保留原色和透明度；透明底图片也会提取透明边界。图案内部线条同样可被提取。
+- 可选 Douglas–Peucker 轮廓简化，默认关闭，容差按原图像素计算。容差越大，细节越少；简化后的轮廓沿用描边宽度，并同时用于预览和导出。
 - 根据图片 DPI 自动计算 PCB 物理尺寸；没有可靠 DPI 时按 300 DPI 计算。
 - 选择绿、红、黄、蓝、白或雅黑阻焊并导出 `.epro2`，默认使用白色阻焊。
 - 自动跟随系统的浅色模式和深色模式。
@@ -31,12 +32,6 @@
 ./run-local.sh
 ```
 
-也可以在启动时添加一张图片：
-
-```sh
-./run-local.sh --input /absolute/path/to/image.png
-```
-
 ## 构建
 
 依赖 CMake 3.21 以上、支持 C++20 的编译器、Qt 6.5 以上（Quick、QuickControls2、Concurrent），以及 OpenCV 4（core、imgproc、photo）。TIFF、WebP 等格式还需要 Qt 对应的图片插件。当前项目目录已经准备了本地 CMake、Qt 和 OpenCV，可以直接执行：
@@ -54,17 +49,15 @@
 
 ### GitHub Actions 三平台构建
 
-`.github/workflows/build.yml` 在 push、pull request 或手动运行时构建并测试三个平台：
-
 | 平台 | 架构 | 下载产物 | 启动方式 |
 | --- | --- | --- | --- |
 | Windows | x64 | `nasti-pcb-designer-windows-x64.zip` | `package/bin/nasti-pcb-designer.exe` |
 | macOS | Apple Silicon / ARM64 | `nasti-pcb-designer-macos-arm64.tar.gz` | `package/nasti-pcb-designer.app` |
 | Linux | x64 | `nasti-pcb-designer-linux-x64.tar.gz` | `package/run.sh` |
 
-在 GitHub 的 **Actions → Build desktop apps → 对应运行 → Artifacts** 下载，解压后保留整个目录。产物包含 Qt/QML 运行库和独立 PCB 导出器，无需另装 Python。Linux 使用 Ubuntu 24.04 构建，需要兼容的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
+产物包含 Qt/QML 运行库和独立 PCB 导出器，无需另装 Python。Linux 使用 Ubuntu 24.04 构建，需要兼容的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
 
-工作流固定使用 Qt 6.8.3、OpenCV 4.12.0，缓存静态 OpenCV；构建后做一次应用启动、图片处理和 PCB 导出的基础运行检查，并确认打包后的程序可以启动、生成可读取的 PCB 文件。构建成功后上传压缩包，保留 30 天。
+工作流固定使用 Qt 6.8.3、OpenCV 4.12.0，缓存静态 OpenCV；构建后做一次应用启动、图片处理和 PCB 导出的基础运行检查，并确认打包后的程序可以启动、生成可读取的 PCB 文件。
 
 只要项目目录包含 `.native-deps/opencv` 和 `.native-deps/qt`，CMake 就会自动找到这两套依赖，无需另外设置 `OpenCV_DIR` 或 `CMAKE_PREFIX_PATH`。如果改用系统安装的依赖，可按实际安装位置配置：
 
@@ -89,6 +82,8 @@ python3 -m venv .venv
 
 1. 在右侧选择“正面”或“背面”，点击“添加图层”选择一张或多张图片。
 2. 为沉金图层调整二值化参数，或点击 Try All 比较全部算法。需要描边沉金或丝印时，勾选“提取并叠加边缘（Canny）”，调节阈值和描边宽度；取消勾选则使用原来的图层结果。
+   如需仅描边，在右侧图层类型中选择“描边”，再调整边缘双阈值和线宽。切换回“沉金”或“丝印”即可恢复该类型的处理结果。
+   需要减少轮廓细节时，可勾选“轮廓简化（Douglas–Peucker）”，调整“简化容差（px）”，默认容差为 1 px；取消勾选或设为 0 即使用未简化的边缘。
 3. 设置各图层的位置、类型、显示状态和叠放顺序。
 4. 选择阻焊颜色和输出目录。
 5. 保存黑白图片，或生成包含所有可见图层的 PCB 文件。

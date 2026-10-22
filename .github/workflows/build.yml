@@ -2,8 +2,8 @@ name: Build desktop apps
 
 on:
     push:
-    pull_request:
-    workflow_dispatch:
+        tags:
+            - 'v[0-9]*'
 
 permissions:
     contents: read
@@ -42,7 +42,7 @@ jobs:
                 shell: bash
         steps:
             - name: Check out source
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             - name: Set up MSVC
               if: runner.os == 'Windows'
@@ -62,7 +62,7 @@ jobs:
               with:
                   version: ${{ env.QT_VERSION }}
                   arch: ${{ matrix.qt-arch }}
-                  modules: qtimageformats qtsvg
+                  modules: qtimageformats
                   setup-python: false
                   cache: true
 

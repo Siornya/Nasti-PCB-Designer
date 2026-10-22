@@ -30,6 +30,8 @@ struct Options {
 	int edgeLowThreshold = 50;
 	int edgeHighThreshold = 150;
 	int edgeWidth = 2;
+	bool simplifyEdges = false;
+	double edgeTolerance = 1.0; // Source-image pixels, also scaled for comparison previews.
 	bool invert = false;
 	bool flipHorizontal = false;
 	bool flipVertical = false;

@@ -40,6 +40,13 @@ void ImageStore::clear() {
 static QImage display(const cv::Mat& binary) {
 	return QImage(binary.data, binary.cols, binary.rows, int(binary.step), QImage::Format_Grayscale8).copy();
 }
+static QImage renderOutline(const cv::Mat& edges) {
+	return edges.empty() ? QImage() : display(255 - edges);
+}
+static QString layerTypeName(const QString& type) {
+	if (type == QStringLiteral("outline")) return QStringLiteral("描边");
+	return type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印");
+}
 static QImage renderSilk(const QImage& original, const cv::Mat& edges,
 	const binarizer::Options& options) {
 	if (edges.empty() && !options.flipHorizontal && !options.flipVertical) return {};
@@ -65,6 +72,7 @@ struct Comparison {
 	cv::Mat source;
 	QImage original;
 	QImage silk;
+	QImage outline;
 	int dotsPerMeterX = 0;
 	int dotsPerMeterY = 0;
 	bool hasPhysicalResolution = false;
@@ -76,6 +84,7 @@ struct Comparison {
 struct Applied {
 	QImage image;
 	QImage silk;
+	QImage outline;
 	QString error;
 };
 
@@ -107,6 +116,7 @@ void Controller::invalidate() {
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())) {
 		artworkLayers[selectedLayer].outputImage = {};
 		artworkLayers[selectedLayer].silkImage = {};
+		artworkLayers[selectedLayer].outlineImage = {};
 	}
 	refreshLayerPresentation();
 	message = QStringLiteral("设置已更新，请点击 Try All 重新比较");
@@ -134,14 +144,14 @@ QVariantMap Controller::selectedParameters() const {
 		{"edgeLowThreshold", options.edgeLowThreshold},
 		{"edgeHighThreshold", options.edgeHighThreshold},
 		{"edgeWidth", options.edgeWidth}, {"equalize", options.equalize},
+		{"simplifyEdges", options.simplifyEdges}, {"edgeTolerance", options.edgeTolerance},
 		{"clahe", options.clahe}, {"invert", options.invert},
 		{"flipHorizontal", options.flipHorizontal}, {"flipVertical", options.flipVertical}
 	};
 }
 bool Controller::hasExportableLayers() const {
-	return std::any_of(artworkLayers.cbegin(), artworkLayers.cend(), [](const ArtworkLayer& layer) {
-		return layer.visible && (layer.type == QStringLiteral("silk")
-			? !layer.originalImage.isNull() : !layer.outputImage.isNull());
+	return std::any_of(artworkLayers.cbegin(), artworkLayers.cend(), [this](const ArtworkLayer& layer) {
+		return layer.visible && !artworkImage(layer).isNull();
 	});
 }
 int Controller::canvasWidth() const { return canvasSize().width(); }
@@ -190,6 +200,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	requestedSettings.edgeLowThreshold = p.value("edgeLowThreshold", 50).toInt();
 	requestedSettings.edgeHighThreshold = p.value("edgeHighThreshold", 150).toInt();
 	requestedSettings.edgeWidth = p.value("edgeWidth", 2).toInt();
+	requestedSettings.simplifyEdges = p.value("simplifyEdges", false).toBool();
+	requestedSettings.edgeTolerance = p.value("edgeTolerance", 1.0).toDouble();
 	requestedSettings.equalize = p.value("equalize", false).toBool();
 	requestedSettings.clahe = p.value("clahe", false).toBool();
 	requestedSettings.invert = p.value("invert", false).toBool();
@@ -200,6 +212,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	const bool createLayer = selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())
 		|| artworkLayers[selectedLayer].sourcePath != sourcePath;
 	const int targetLayerId = createLayer ? 0 : artworkLayers[selectedLayer].id;
+	const bool outlineOnly = !createLayer && artworkLayers[selectedLayer].type == QStringLiteral("outline");
 	active = true;
 	message = singleMethod < 0
 		? QStringLiteral("正在生成 %1 种方案…").arg(int(binarizer::methods.size()))
@@ -241,10 +254,14 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			if (layer.originalImage != batch.original) {
 				layer.outputImage = {};
 				layer.silkImage = {};
+				layer.outlineImage = {};
 			}
 			layer.sourceImage = batch.source;
 			layer.originalImage = batch.original;
-			if (singleMethod >= 0) layer.silkImage = batch.silk;
+			if (singleMethod >= 0) {
+				layer.silkImage = batch.silk;
+				layer.outlineImage = batch.outline;
+			}
 			if (singleMethod >= 0 || createLayer) layer.settings = requestedSettings;
 			layer.dotsPerMeterX = batch.dotsPerMeterX;
 			layer.dotsPerMeterY = batch.dotsPerMeterY;
@@ -300,7 +317,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 		}
 		emit changed();
 	});
-	watcher->setFuture(QtConcurrent::run([path = url.toLocalFile(), options, stop, singleMethod] {
+	watcher->setFuture(QtConcurrent::run([path = url.toLocalFile(), options, stop, singleMethod, outlineOnly] {
 		Comparison batch;
 		try {
 			QImageReader reader(path);
@@ -322,7 +339,10 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			batch.original = image;
 			if (stop->load()) return batch;
 			const auto gray = binarizer::preprocess(batch.source, options);
-			const cv::Mat edges = options.extractEdges ? binarizer::edgeMask(gray, batch.source, options) : cv::Mat();
+			auto edgeOptions = options;
+			edgeOptions.extractEdges = options.extractEdges || outlineOnly;
+			const cv::Mat edges = edgeOptions.extractEdges ? binarizer::edgeMask(gray, batch.source, edgeOptions) : cv::Mat();
+			const cv::Mat overlay = options.extractEdges ? edges : cv::Mat();
 			for (int index = 0; index < int(binarizer::methods.size()); ++index) {
 				if (stop->load()) break;
 				if (singleMethod >= 0 && index != singleMethod) continue;
@@ -331,8 +351,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				candidate.method = method;
 				double thresholdValue = std::numeric_limits<double>::quiet_NaN();
 				try {
-					batch.previews.push_back(display(binarizer::overlayEdges(
-						binarizer::threshold(gray, candidate, &thresholdValue), edges)));
+					batch.previews.push_back(outlineOnly && singleMethod < 0 ? renderOutline(edges)
+						: display(binarizer::overlayEdges(binarizer::threshold(gray, candidate, &thresholdValue), overlay)));
 					batch.errors.emplace_back();
 				} catch (const std::exception& error) {
 					batch.previews.emplace_back();
@@ -340,8 +360,10 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				}
 				batch.thresholds.push_back(thresholdValue);
 			}
-			if (singleMethod >= 0 && !stop->load())
-				batch.silk = renderSilk(batch.original, edges, options);
+			if (singleMethod >= 0 && !stop->load()) {
+				batch.silk = renderSilk(batch.original, overlay, options);
+				batch.outline = renderOutline(edges);
+			}
 		} catch (const std::exception& error) { batch.error = QString::fromUtf8(error.what()); }
 		return batch;
 	}));
@@ -361,6 +383,7 @@ void Controller::apply(int index) {
 	options.method = binarizer::methods[index];
 	const auto source = sourceImage;
 	const int targetLayerId = artworkLayers[selectedLayer].id;
+	const bool outlineOnly = artworkLayers[selectedLayer].type == QStringLiteral("outline");
 	auto* watcher = new QFutureWatcher<Applied>(this);
 	connect(watcher, &QFutureWatcher<Applied>::finished, this, [this, watcher, stop, options, targetLayerId] {
 		const auto applied = watcher->result();
@@ -374,6 +397,7 @@ void Controller::apply(int index) {
 				selectedLayer = layerIndex;
 				artworkLayers[layerIndex].outputImage = applied.image;
 				artworkLayers[layerIndex].silkImage = applied.silk;
+				artworkLayers[layerIndex].outlineImage = applied.outline;
 				artworkLayers[layerIndex].settings = options;
 				break;
 			}
@@ -385,14 +409,18 @@ void Controller::apply(int index) {
 		emit changed();
 	});
 	const QImage originalImage = artworkLayers[selectedLayer].originalImage;
-	watcher->setFuture(QtConcurrent::run([source, originalImage, options, stop] {
+	watcher->setFuture(QtConcurrent::run([source, originalImage, options, stop, outlineOnly] {
 		Applied applied;
 		try {
 			if (!stop->load()) {
 				const cv::Mat gray = binarizer::preprocess(source, options);
-				const cv::Mat edges = options.extractEdges ? binarizer::edgeMask(gray, source, options) : cv::Mat();
-				applied.image = display(binarizer::overlayEdges(binarizer::threshold(gray, options), edges));
-				applied.silk = renderSilk(originalImage, edges, options);
+				auto edgeOptions = options;
+				edgeOptions.extractEdges = options.extractEdges || outlineOnly;
+				const cv::Mat edges = edgeOptions.extractEdges ? binarizer::edgeMask(gray, source, edgeOptions) : cv::Mat();
+				const cv::Mat overlay = options.extractEdges ? edges : cv::Mat();
+				applied.image = display(binarizer::overlayEdges(binarizer::threshold(gray, options), overlay));
+				applied.silk = renderSilk(originalImage, overlay, options);
+				applied.outline = renderOutline(edges);
 			}
 		} catch (const std::exception& error) { applied.error = QString::fromUtf8(error.what()); }
 		return applied;
@@ -417,11 +445,21 @@ void Controller::selectLayer(int index) {
 
 void Controller::setLayerType(int index, const QString& type) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
-	if (type != QStringLiteral("enig") && type != QStringLiteral("silk")) return;
-	artworkLayers[index].type = type;
+	if (type != QStringLiteral("enig") && type != QStringLiteral("silk") && type != QStringLiteral("outline")) return;
+	auto& layer = artworkLayers[index];
+	layer.type = type;
+	if (type == QStringLiteral("outline") && layer.outlineImage.isNull() && !layer.sourceImage.empty()) {
+		if (activeSideValue != layer.side) setActiveSide(layer.side);
+		selectedLayer = index;
+		selectedLayerIdForSide(activeSideValue) = layer.id;
+		rows.clear();
+		loadSelectedLayer();
+		preview(QUrl::fromLocalFile(layer.sourcePath), selectedParameters(), int(layer.settings.method));
+		return;
+	}
 	refreshLayerPresentation();
 	message = QStringLiteral("图层“%1”已设为%2")
-		.arg(artworkLayers[index].name, type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印"));
+		.arg(layer.name, layerTypeName(type));
 	emit changed();
 }
 
@@ -539,7 +577,7 @@ void Controller::loadSelectedLayer() {
 	}
 	const auto& layer = artworkLayers[selectedLayer];
 	sourceImage = layer.sourceImage;
-	output = layer.outputImage;
+	output = binaryImage(layer);
 	settings = layer.settings;
 	if (!layer.originalImage.isNull()) {
 		images->put("selected-original", layer.originalImage);
@@ -549,6 +587,14 @@ void Controller::loadSelectedLayer() {
 
 QSize Controller::layerSize(const ArtworkLayer& layer) const {
 	return layer.outputImage.isNull() ? layer.originalImage.size() : layer.outputImage.size();
+}
+const QImage& Controller::binaryImage(const ArtworkLayer& layer) const {
+	return layer.type == QStringLiteral("outline") ? layer.outlineImage : layer.outputImage;
+}
+const QImage& Controller::artworkImage(const ArtworkLayer& layer) const {
+	if (layer.type == QStringLiteral("silk"))
+		return layer.silkImage.isNull() ? layer.originalImage : layer.silkImage;
+	return binaryImage(layer);
 }
 
 QSize Controller::canvasSize() const {
@@ -575,9 +621,7 @@ void Controller::refreshLayerPresentation() {
 		const int index = sideLayerIndexes[position];
 		const auto& layer = artworkLayers[index];
 		QString thumbnail;
-		const QImage thumbnailImage = layer.type == QStringLiteral("silk")
-			? (layer.silkImage.isNull() ? layer.originalImage : layer.silkImage)
-			: layer.outputImage;
+		const QImage& thumbnailImage = artworkImage(layer);
 		if (!thumbnailImage.isNull()) {
 			const QString key = QStringLiteral("layer/%1").arg(layer.id);
 			images->put(key, thumbnailImage);
@@ -585,7 +629,7 @@ void Controller::refreshLayerPresentation() {
 		}
 		layerItems.append(QVariantMap{
 			{"layerIndex", index}, {"name", layer.name}, {"type", layer.type},
-			{"typeName", layer.type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印")},
+			{"typeName", layerTypeName(layer.type)},
 			{"side", layer.side}, {"visible", layer.visible}, {"selected", index == selectedLayer},
 			{"canMoveUp", position > 0}, {"canMoveDown", position + 1 < int(sideLayerIndexes.size())},
 			{"leftX", layer.x}, {"topY", layer.y},
@@ -596,8 +640,8 @@ void Controller::refreshLayerPresentation() {
 		});
 	}
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())
-		&& !artworkLayers[selectedLayer].outputImage.isNull()) {
-		output = artworkLayers[selectedLayer].outputImage;
+		&& !binaryImage(artworkLayers[selectedLayer]).isNull()) {
+		output = binaryImage(artworkLayers[selectedLayer]);
 		images->put("selected", output);
 		result = "image://results/selected?revision=" + QString::number(revision);
 	} else {
@@ -626,8 +670,8 @@ void Controller::refreshLayerPresentation() {
 			painter.drawImage(QPointF(layer.x * scale, layer.y * scale), source);
 			continue;
 		}
-		if (layer.outputImage.isNull()) continue;
-		QImage source = layer.outputImage.convertToFormat(QImage::Format_Grayscale8);
+		if (binaryImage(layer).isNull()) continue;
+		QImage source = binaryImage(layer).convertToFormat(QImage::Format_Grayscale8);
 		if (scale < 1.0)
 			source = source.scaled(std::max(1, int(source.width() * scale)),
 				std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::FastTransformation);
@@ -744,9 +788,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	for (int index = 0; index < int(artworkLayers.size()); ++index) {
 		const auto& layer = artworkLayers[index];
 		if (!layer.visible) continue;
-		const QImage& image = layer.type == QStringLiteral("silk")
-			? (layer.silkImage.isNull() ? layer.originalImage : layer.silkImage)
-			: layer.outputImage;
+		const QImage& image = artworkImage(layer);
 		if (image.isNull()) continue;
 		const QString path = QDir(pcbTemporaryDirectory->path())
 			.filePath(QStringLiteral("layer-%1.png").arg(index));
@@ -757,7 +799,8 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 			return;
 		}
 		exportedLayers.append(QJsonObject{{QStringLiteral("source"), path},
-			{QStringLiteral("type"), layer.type}, {QStringLiteral("x"), layer.x},
+			{QStringLiteral("type"), layer.type == QStringLiteral("outline") ? QStringLiteral("enig") : layer.type},
+			{QStringLiteral("x"), layer.x},
 			{QStringLiteral("y"), layer.y}, {QStringLiteral("side"), layer.side}});
 	}
 	const ArtworkLayer* resolutionLayer = nullptr;
@@ -766,8 +809,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		resolutionLayer = &artworkLayers[selectedLayer];
 	if (!resolutionLayer) {
 		for (const auto& layer : artworkLayers)
-			if (layer.visible && (layer.type == QStringLiteral("silk")
-				? !layer.originalImage.isNull() : !layer.outputImage.isNull()) && layer.hasPhysicalResolution) {
+			if (layer.visible && !artworkImage(layer).isNull() && layer.hasPhysicalResolution) {
 				resolutionLayer = &layer;
 				break;
 			}

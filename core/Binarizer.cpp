@@ -29,7 +29,8 @@ static void validate(const Options& o) {
 		|| o.denoiseMethod < 0 || o.denoiseMethod > 3
 		|| o.edgeLowThreshold < 0 || o.edgeLowThreshold > 1000
 		|| o.edgeHighThreshold < 0 || o.edgeHighThreshold > 1000
-		|| o.edgeWidth < 1 || o.edgeWidth > 100)
+		|| o.edgeWidth < 1 || o.edgeWidth > 100
+		|| !std::isfinite(o.edgeTolerance) || o.edgeTolerance < 0 || o.edgeTolerance > 100)
 		throw std::invalid_argument("Invalid binarization parameters");
 	for (int value : {o.denoiseStrength, o.smooth, o.sharpen, o.detail, o.edge, o.localContrast})
 		if (value < 0 || value > 100) throw std::invalid_argument("Strength must be 0..100");
@@ -241,6 +242,23 @@ cv::Mat edgeMask(const cv::Mat& gray, const cv::Mat& source, const Options& opti
 		}
 	}
 	const double scale = double(gray.cols) / source.cols;
+	if (options.simplifyEdges && options.edgeTolerance > 0) {
+		std::vector<std::vector<cv::Point>> contours;
+		// Trace every boundary in order, including internal lines and holes.
+		// Open strokes are traced out and back rather than closed across their endpoints.
+		cv::findContours(edges, contours, cv::RETR_LIST, cv::CHAIN_APPROX_NONE);
+		cv::Mat simplified = cv::Mat::zeros(edges.size(), edges.type());
+		for (const auto& contour : contours) {
+			std::vector<cv::Point> points;
+			cv::approxPolyDP(contour, points, options.edgeTolerance * scale, true);
+			// Keep tiny strokes and loops that would otherwise collapse to a point or line.
+			if (points.size() < 2 || (cv::contourArea(contour) > 0 && cv::contourArea(points) == 0))
+				points = contour;
+			if (points.size() == 1) simplified.at<uchar>(points.front()) = 255;
+			else cv::polylines(simplified, points, true, cv::Scalar(255), 1, cv::LINE_8);
+		}
+		edges = simplified;
+	}
 	const int width = std::max(1, int(std::lround(options.edgeWidth * scale)));
 	if (width > 1) cv::dilate(edges, edges,
 		cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(width, width)));

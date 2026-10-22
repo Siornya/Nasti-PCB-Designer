@@ -24,6 +24,8 @@ ApplicationWindow {
 			if (layer.selected) return layer
 		return null
 	}
+	readonly property bool outlineOnly: currentLayer ? currentLayer.type === "outline" : false
+	readonly property bool extractingEdges: outlineOnly || extractEdges.checked
 	readonly property color pageColor: darkMode ? "#1f2329" : "#f0f1f3"
 	readonly property color surfaceColor: darkMode ? "#292e36" : "#f5f6f8"
 	readonly property color raisedColor: darkMode ? "#323842" : "#ffffff"
@@ -59,6 +61,7 @@ ApplicationWindow {
 			edge: edge.value, localContrast: localContrast.value,
 			extractEdges: extractEdges.checked, edgeLowThreshold: edgeLowThreshold.value,
 			edgeHighThreshold: edgeHighThreshold.value, edgeWidth: edgeWidth.value,
+			simplifyEdges: simplifyEdges.checked, edgeTolerance: edgeTolerance.value / 10,
 			equalize: equalize.checked, clahe: clahe.checked, invert: invert.checked,
 			flipHorizontal: horizontal.checked, flipVertical: vertical.checked }
 	}
@@ -108,6 +111,8 @@ ApplicationWindow {
 		edgeLowThreshold.value = values.edgeLowThreshold
 		edgeHighThreshold.value = values.edgeHighThreshold
 		edgeWidth.value = values.edgeWidth
+		simplifyEdges.checked = values.simplifyEdges
+		edgeTolerance.value = Math.round(values.edgeTolerance * 10)
 		equalize.checked = values.equalize
 		clahe.checked = values.clahe
 		invert.checked = values.invert
@@ -135,7 +140,8 @@ ApplicationWindow {
 		controller.compare(sourceFile, parameters())
 	}
 	function setLayerMaterial(layerIndex, materialIndex) {
-		controller.setLayerType(layerIndex, materialIndex === 0 ? "enig" : "silk")
+		chooseLayer(layerIndex)
+		controller.setLayerType(layerIndex, ["enig", "silk", "outline"][materialIndex])
 	}
 	onSourceFileChanged: {
 		if (automaticOutput && !controller.hasExportableLayers && sourceFile.toString().length)
@@ -339,6 +345,7 @@ ApplicationWindow {
 					spacing: 8
 					ControlsGroup {
 						title: "二值化"
+						enabled: !window.outlineOnly
 						GridLayout {
 							anchors.fill: parent
 							columns: 2
@@ -418,10 +425,12 @@ ApplicationWindow {
 							CheckBox {
 								id: extractEdges
 								text: "提取并叠加边缘（Canny）"
+								visible: !window.outlineOnly
 								Layout.columnSpan: 2
 								onClicked: window.requestPreview()
 							}
-							Label { text: "低阈值"; enabled: extractEdges.checked }
+							Label { text: "仅描边（Canny）"; visible: window.outlineOnly; Layout.columnSpan: 2 }
+							Label { text: "低阈值"; enabled: window.extractingEdges }
 							SpinBox {
 								id: edgeLowThreshold
 								Layout.fillWidth: true
@@ -429,10 +438,10 @@ ApplicationWindow {
 								to: 1000
 								value: 50
 								editable: true
-								enabled: extractEdges.checked
+								enabled: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
-							Label { text: "高阈值"; enabled: extractEdges.checked }
+							Label { text: "高阈值"; enabled: window.extractingEdges }
 							SpinBox {
 								id: edgeHighThreshold
 								Layout.fillWidth: true
@@ -440,10 +449,10 @@ ApplicationWindow {
 								to: 1000
 								value: 150
 								editable: true
-								enabled: extractEdges.checked
+								enabled: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
-							Label { text: "描边宽度"; enabled: extractEdges.checked }
+							Label { text: "描边宽度"; enabled: window.extractingEdges }
 							SpinBox {
 								id: edgeWidth
 								Layout.fillWidth: true
@@ -451,11 +460,35 @@ ApplicationWindow {
 								to: 100
 								value: 2
 								editable: true
-								enabled: extractEdges.checked
+								enabled: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
+							CheckBox {
+								id: simplifyEdges
+								text: "轮廓简化（Douglas–Peucker）"
+								Layout.columnSpan: 2
+								enabled: window.extractingEdges
+								onClicked: window.requestPreview()
+							}
+							Label { text: "简化容差（px）"; enabled: window.extractingEdges && simplifyEdges.checked }
+							SpinBox {
+								id: edgeTolerance
+								Layout.fillWidth: true
+								from: 0
+								to: 1000
+								value: 10
+								editable: true
+								enabled: window.extractingEdges && simplifyEdges.checked
+								validator: DoubleValidator { bottom: 0; top: 100; decimals: 1; locale: edgeTolerance.locale.name }
+								textFromValue: function(value, locale) { return Number(value / 10).toLocaleString(locale, 'f', 1) }
+								valueFromText: function(text, locale) { return Math.round(Number.fromLocaleString(locale, text) * 10) }
+								onValueModified: window.requestPreview()
+								ToolTip.visible: hovered
+								ToolTip.text: "按原图像素计算；容差越大，保留的细节越少。0 表示不简化。"
+							}
 							Label {
-								text: "沉金叠加到二值图，丝印叠加到原色图；可提取内部线条"
+								text: window.outlineOnly ? "仅保留轮廓，按沉金导出；可与原图图层叠放"
+									: "沉金叠加到二值图，丝印叠加到原色图；可提取内部线条"
 								Layout.columnSpan: 2
 								Layout.fillWidth: true
 								wrapMode: Text.WordWrap
@@ -468,7 +501,7 @@ ApplicationWindow {
 						title: "输出"
 						RowLayout {
 							anchors.fill: parent
-							CheckBox { id: invert; text: "反相"; onClicked: window.requestPreview() }
+							CheckBox { id: invert; text: "反相"; enabled: !window.outlineOnly; onClicked: window.requestPreview() }
 							CheckBox { id: horizontal; text: "水平翻转"; onClicked: window.requestPreview() }
 							CheckBox { id: vertical; text: "垂直翻转"; onClicked: window.requestPreview() }
 						}
@@ -671,8 +704,8 @@ ApplicationWindow {
 										Layout.fillWidth: true
 										ComboBox {
 											Layout.fillWidth: true
-											model: ["沉金", "丝印"]
-											currentIndex: modelData.type === "enig" ? 0 : 1
+											model: ["沉金", "丝印", "描边"]
+											currentIndex: modelData.type === "outline" ? 2 : modelData.type === "enig" ? 0 : 1
 											enabled: !controller.busy
 											onActivated: window.setLayerMaterial(modelData.layerIndex, currentIndex)
 										}
