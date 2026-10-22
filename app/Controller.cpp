@@ -1,4 +1,5 @@
 #include "Controller.hpp"
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -636,22 +637,39 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		emit changed();
 		return;
 	}
-	const QString root = QStringLiteral(BINARIZER_SOURCE_DIR);
+	QString root = QStringLiteral(BINARIZER_SOURCE_DIR);
+	QString exporter;
+	const QDir applicationDirectory(QCoreApplication::applicationDirPath());
+#ifdef Q_OS_WIN
+	const QString exporterName = QStringLiteral("pcb-exporter.exe");
+#else
+	const QString exporterName = QStringLiteral("pcb-exporter");
+#endif
+	const QStringList exporterDirectories{
+		QStringLiteral("../exporter"), QStringLiteral("../Resources/exporter")};
+	for (const QString& directory : exporterDirectories) {
+		const QString candidate = applicationDirectory.filePath(directory + QLatin1Char('/') + exporterName);
+		if (!QFileInfo(candidate).isExecutable()) continue;
+		exporter = QDir::cleanPath(candidate);
+		root = QFileInfo(exporter).absolutePath();
+		break;
+	}
 	const QString script = QDir(root).filePath(QStringLiteral("img2enig.py"));
-	if (!QFileInfo::exists(script)) {
+	if (exporter.isEmpty() && !QFileInfo::exists(script)) {
 		message = QStringLiteral("找不到 Python PCB 导出器：%1").arg(script);
 		emit changed();
 		return;
 	}
 	QString python = qEnvironmentVariable("IMAGE_BINARIZER_PYTHON");
-	if (python.isEmpty()) {
+	if (exporter.isEmpty() && python.isEmpty()) {
 		const QString unixEnvironment = QDir(root).filePath(QStringLiteral(".venv/bin/python"));
 		const QString windowsEnvironment = QDir(root).filePath(QStringLiteral(".venv/Scripts/python.exe"));
 		if (QFileInfo(unixEnvironment).isExecutable()) python = unixEnvironment;
 		else if (QFileInfo(windowsEnvironment).isExecutable()) python = windowsEnvironment;
 		else python = QStandardPaths::findExecutable(QStringLiteral("python3"));
+		if (python.isEmpty()) python = QStandardPaths::findExecutable(QStringLiteral("python"));
 	}
-	if (python.isEmpty() || !QFileInfo(python).isExecutable()) {
+	if (exporter.isEmpty() && (python.isEmpty() || !QFileInfo(python).isExecutable())) {
 		message = QStringLiteral("找不到可用的 Python 运行环境");
 		emit changed();
 		return;
@@ -740,11 +758,12 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		return;
 	}
 	manifest.close();
-	const QStringList arguments{script, QStringLiteral("--manifest"), manifestPath,
+	QStringList arguments{QStringLiteral("--manifest"), manifestPath,
 		QStringLiteral("-o"), pcbDestination};
+	if (exporter.isEmpty()) arguments.prepend(script);
 	auto* process = new QProcess(this);
 	pcbProcess = process;
-	process->setProgram(python);
+	process->setProgram(exporter.isEmpty() ? python : exporter);
 	process->setArguments(arguments);
 	process->setWorkingDirectory(root);
 	connect(process, &QProcess::finished, this,

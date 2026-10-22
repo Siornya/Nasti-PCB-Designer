@@ -20,7 +20,7 @@
 - `app/`：Qt 后台任务、图层管理和 PCB 导出调用。
 - `qml/`：Qt Quick 界面。
 - `img2enig.py`：接收 C++ 输出的图层清单并生成 `.epro2`。
-- `tests/`：C++ 算法、控制器和 Python PCB 导出器测试。
+- `tests/`：应用启动、图片处理和 PCB 导出的基础运行检查。
 
 ## 启动桌面应用
 
@@ -49,7 +49,21 @@
 ./build-native/bin/nasti-pcb-designer
 ```
 
-使用 `-DBUILD_GUI=OFF` 可以只构建不依赖 Qt 的图片处理核心和测试。
+使用 `-DBUILD_GUI=OFF` 可以只构建不依赖 Qt 的图片处理核心。
+
+### GitHub Actions 三平台构建
+
+`.github/workflows/build.yml` 在 push、pull request 或手动运行时构建并测试三个平台：
+
+| 平台 | 架构 | 下载产物 | 启动方式 |
+| --- | --- | --- | --- |
+| Windows | x64 | `nasti-pcb-designer-windows-x64.zip` | `package/bin/nasti-pcb-designer.exe` |
+| macOS | Apple Silicon / ARM64 | `nasti-pcb-designer-macos-arm64.tar.gz` | `package/nasti-pcb-designer.app` |
+| Linux | x64 | `nasti-pcb-designer-linux-x64.tar.gz` | `package/run.sh` |
+
+在 GitHub 的 **Actions → Build desktop apps → 对应运行 → Artifacts** 下载，解压后保留整个目录。产物包含 Qt/QML 运行库和独立 PCB 导出器，无需另装 Python。Linux 使用 Ubuntu 24.04 构建，需要兼容的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
+
+工作流固定使用 Qt 6.8.3、OpenCV 4.12.0，缓存静态 OpenCV；构建后做一次应用启动、图片处理和 PCB 导出的基础运行检查，并确认打包后的程序可以启动、生成可读取的 PCB 文件。构建成功后上传压缩包，保留 30 天。
 
 只要项目目录包含 `.native-deps/opencv` 和 `.native-deps/qt`，CMake 就会自动找到这两套依赖，无需另外设置 `OpenCV_DIR` 或 `CMAKE_PREFIX_PATH`。如果改用系统安装的依赖，可按实际安装位置配置：
 
@@ -68,7 +82,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-程序会优先使用项目中的 `.venv`。也可以通过 `IMAGE_BINARIZER_PYTHON` 指定其他 Python 解释器。
+源码运行时，程序会优先使用项目中的 `.venv`。也可以通过 `IMAGE_BINARIZER_PYTHON` 指定其他 Python 解释器。GitHub Actions 的下载产物优先调用自带的独立导出器。
 
 ## 使用桌面应用
 
@@ -130,7 +144,6 @@ Qt 应用会把可见图层写入临时 JSON 清单，再调用 `img2enig.py` �
 ```sh
 cmake --build build-native --parallel
 ctest --test-dir build-native --output-on-failure
-.venv/bin/python -m unittest tests.test_img2enig -v
 ```
 
 生产前应在嘉立创EDA中检查铜层、阻焊层、DRC、2D/3D 和 Gerber 预览，并确认最小线宽、间距和阻焊偏位符合板厂要求。

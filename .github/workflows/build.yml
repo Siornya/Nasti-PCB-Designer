@@ -1,0 +1,151 @@
+name: Build desktop apps
+
+on:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: desktop-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    QT_VERSION: '6.8.3'
+    OPENCV_VERSION: '4.12.0'
+    PYTHONUTF8: '1'
+    QT_QPA_PLATFORM: offscreen
+    QT_QUICK_BACKEND: software
+
+jobs:
+    build:
+        name: ${{ matrix.platform }}
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 60
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - platform: windows-x64
+                      runner: windows-2022
+                      qt-arch: win64_msvc2022_64
+                    - platform: macos-arm64
+                      runner: macos-15
+                      qt-arch: clang_64
+                    - platform: linux-x64
+                      runner: ubuntu-24.04
+                      qt-arch: linux_gcc_64
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - name: Check out source
+              uses: actions/checkout@v4
+
+            - name: Set up MSVC
+              if: runner.os == 'Windows'
+              uses: ilammy/msvc-dev-cmd@v1
+              with:
+                  arch: x64
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+                  cache: pip
+                  cache-dependency-path: requirements.txt
+
+            - name: Install Qt
+              uses: jurplel/install-qt-action@v4
+              with:
+                  version: ${{ env.QT_VERSION }}
+                  arch: ${{ matrix.qt-arch }}
+                  modules: qtimageformats qtsvg
+                  setup-python: false
+                  cache: true
+
+            - name: Install build and export tools
+              run: python -m pip install -r requirements.txt "cmake==3.31.6" "ninja==1.11.1.3" "pyinstaller==6.16.0"
+
+            - name: Install virtual display
+              if: runner.os == 'Linux'
+              run: sudo apt-get install -y xvfb
+
+            - name: Cache OpenCV
+              id: opencv-cache
+              uses: actions/cache@v4
+              with:
+                  path: build/deps/opencv
+                  key: opencv-static-${{ env.OPENCV_VERSION }}-${{ matrix.runner }}-${{ runner.arch }}-v1
+
+            - name: Download OpenCV source
+              if: steps.opencv-cache.outputs.cache-hit != 'true'
+              run: |
+                  python - <<'PY'
+                  import os
+                  import pathlib
+                  import urllib.request
+                  import zipfile
+                  version = os.environ['OPENCV_VERSION']
+                  pathlib.Path('build').mkdir(exist_ok=True)
+                  urllib.request.urlretrieve(f'https://github.com/opencv/opencv/archive/refs/tags/{version}.zip', 'build/opencv.zip')
+                  with zipfile.ZipFile('build/opencv.zip') as archive:
+                      archive.extractall('build')
+                  PY
+
+            - name: Build static OpenCV
+              if: steps.opencv-cache.outputs.cache-hit != 'true'
+              run: |
+                  cmake -S "build/opencv-${OPENCV_VERSION}" -B build/opencv-build -G Ninja \
+                      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/build/deps/opencv" \
+                      -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_LIST=core,imgproc,photo \
+                      -DBUILD_SHARED_LIBS=OFF -DBUILD_WITH_STATIC_CRT=OFF \
+                      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+                      -DBUILD_opencv_apps=OFF -DBUILD_opencv_python2=OFF -DBUILD_opencv_python3=OFF \
+                      -DBUILD_JAVA=OFF -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF \
+                      -DWITH_LAPACK=OFF -DWITH_TBB=OFF -DWITH_OPENMP=OFF
+                  cmake --build build/opencv-build --parallel 3
+                  cmake --install build/opencv-build
+
+            - name: Configure app
+              run: |
+                  cmake -S . -B build/app -G Ninja \
+                      -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_APP_PACKAGE=ON \
+                      -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR};${GITHUB_WORKSPACE}/build/deps/opencv" \
+                      -DCMAKE_INSTALL_LIBDIR=lib
+
+            - name: Build app
+              run: cmake --build build/app --parallel 3
+
+            - name: Run app smoke check
+              run: |
+                  export IMAGE_BINARIZER_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+                  ctest --test-dir build/app --output-on-failure
+
+            - name: Bundle PCB exporter
+              run: |
+                  python -m PyInstaller --noconfirm --clean --onedir --name pcb-exporter \
+                      --python-option "X utf8" --distpath build/exporter \
+                      --workpath build/pyinstaller --specpath build/pyinstaller img2enig.py
+
+            - name: Deploy Qt runtime
+              run: cmake --install build/app --prefix "${GITHUB_WORKSPACE}/build/package"
+
+            - name: Verify and archive package
+              run: |
+                  if [[ "$RUNNER_OS" == "Linux" ]]; then
+                      xvfb-run -a python scripts/package_app.py --platform "${{ matrix.platform }}"
+                  else
+                      python scripts/package_app.py --platform "${{ matrix.platform }}"
+                  fi
+
+            - name: Upload desktop app
+              uses: actions/upload-artifact@v4
+              with:
+                  name: nasti-pcb-designer-${{ matrix.platform }}
+                  path: dist/nasti-pcb-designer-${{ matrix.platform }}.*
+                  if-no-files-found: error
+                  retention-days: 30
+                  compression-level: 0
