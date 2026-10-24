@@ -2,9 +2,11 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace binarizer {
 std::string_view name(Method method) {
@@ -215,8 +217,219 @@ cv::Mat process(const cv::Mat& source, const Options& options) {
 	const cv::Mat gray = preprocess(source, options);
 	return finish(threshold(gray, options), gray, source, options);
 }
-cv::Mat edgeMask(const cv::Mat& gray, const cv::Mat& source, const Options& options) {
+
+namespace {
+const std::array<cv::Point, 8> neighborOffsets{{
+	{1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, -1}
+}};
+
+bool activePixel(const cv::Mat& edges, const cv::Point& point) {
+	return point.x >= 0 && point.x < edges.cols && point.y >= 0 && point.y < edges.rows
+		&& edges.at<uchar>(point) != 0;
+}
+
+bool connectedNeighbor(const cv::Mat& edges, const cv::Point& point, int direction) {
+	const cv::Point offset = neighborOffsets[direction];
+	if (!activePixel(edges, point + offset)) return false;
+	if (offset.x != 0 && offset.y != 0
+		&& (activePixel(edges, point + cv::Point(offset.x, 0))
+			|| activePixel(edges, point + cv::Point(0, offset.y)))) return false;
+	return true;
+}
+
+cv::Mat buildAdjacency(const cv::Mat& edges) {
+	cv::Mat adjacency = cv::Mat::zeros(edges.size(), CV_8UC1);
+	for (int y = 0; y < edges.rows; ++y)
+		for (int x = 0; x < edges.cols; ++x) {
+			const cv::Point point(x, y);
+			if (!activePixel(edges, point)) continue;
+			uchar mask = 0;
+			for (int direction = 0; direction < int(neighborOffsets.size()); ++direction)
+				if (connectedNeighbor(edges, point, direction)) mask |= static_cast<uchar>(1u << direction);
+			adjacency.at<uchar>(point) = mask;
+		}
+	return adjacency;
+}
+
+bool visitedEdge(const cv::Mat& visited, const cv::Point& point, int direction) {
+	return (visited.at<uchar>(point) & (1u << direction)) != 0;
+}
+
+void markVisitedEdge(cv::Mat& visited, const cv::Point& point, int direction) {
+	visited.at<uchar>(point) |= static_cast<uchar>(1u << direction);
+	const cv::Point neighbor = point + neighborOffsets[direction];
+	visited.at<uchar>(neighbor) |= static_cast<uchar>(1u << ((direction + 4) % 8));
+}
+
+struct EdgePath {
+	std::vector<cv::Point> points;
+	bool closed = false;
+};
+
+EdgePath traceEdgePath(const cv::Mat& adjacency, cv::Mat& visited,
+	const cv::Point& start, int firstDirection) {
+	EdgePath path;
+	path.points.push_back(start);
+	cv::Point current = start;
+	int direction = firstDirection;
+	while (direction >= 0) {
+		const cv::Point next = current + neighborOffsets[direction];
+		markVisitedEdge(visited, current, direction);
+		if (next == start) {
+			path.closed = true;
+			break;
+		}
+		path.points.push_back(next);
+		if (std::popcount(adjacency.at<uchar>(next)) != 2) break;
+		current = next;
+		direction = -1;
+		for (int candidate = 0; candidate < int(neighborOffsets.size()); ++candidate)
+			if ((adjacency.at<uchar>(current) & (1u << candidate)) != 0
+				&& !visitedEdge(visited, current, candidate)) {
+				direction = candidate;
+				break;
+			}
+	}
+	return path;
+}
+
+int componentCount(const cv::Mat& mask, int connectivity) {
+	cv::Mat labels;
+	return cv::connectedComponents(mask, labels, connectivity, CV_32S) - 1;
+}
+
+double maximumMaskDistance(const cv::Mat& from, const cv::Mat& to) {
+	if (cv::countNonZero(from) == 0) return 0;
+	cv::Mat inverse, distances;
+	cv::bitwise_not(to, inverse);
+	cv::distanceTransform(inverse, distances, cv::DIST_L2, cv::DIST_MASK_PRECISE);
+	double maximum = 0;
+	cv::minMaxLoc(distances, nullptr, &maximum, nullptr, nullptr, from);
+	return maximum;
+}
+
+int rectangleCount(const cv::Mat& mask) {
+	std::vector<std::pair<int, int>> previous;
+	int count = 0;
+	for (int y = 0; y < mask.rows; ++y) {
+		std::vector<std::pair<int, int>> current;
+		const uchar* line = mask.ptr<uchar>(y);
+		for (int x = 0; x < mask.cols;) {
+			while (x < mask.cols && line[x] == 0) ++x;
+			const int start = x;
+			while (x < mask.cols && line[x] != 0) ++x;
+			if (start < x) current.emplace_back(start, x);
+		}
+		size_t previousIndex = 0;
+		for (const auto& run : current) {
+			while (previousIndex < previous.size() && previous[previousIndex] < run) ++previousIndex;
+			if (previousIndex == previous.size() || previous[previousIndex] != run) ++count;
+		}
+		previous = std::move(current);
+	}
+	return count;
+}
+
+EdgeSimplificationStatus assessSimplification(const cv::Mat& original,
+	const cv::Mat& simplified, double tolerance, EdgeSimplificationStats* stats) {
+	const int originalRectangles = rectangleCount(original);
+	const int candidateRectangles = rectangleCount(simplified);
+	auto finish = [&](EdgeSimplificationStatus status) {
+		if (stats) {
+			stats->status = status;
+			stats->originalRectangles = originalRectangles;
+			stats->candidateRectangles = candidateRectangles;
+			stats->resultRectangles = status == EdgeSimplificationStatus::Applied
+				? candidateRectangles : originalRectangles;
+		}
+		return status;
+	};
+	if (cv::countNonZero(original != simplified) == 0)
+		return finish(EdgeSimplificationStatus::Unchanged);
+	if (candidateRectangles > originalRectangles)
+		return finish(EdgeSimplificationStatus::PrimitiveCountIncreased);
+	cv::Mat originalBackground, simplifiedBackground;
+	cv::bitwise_not(original, originalBackground);
+	cv::bitwise_not(simplified, simplifiedBackground);
+	if (componentCount(original, 8) != componentCount(simplified, 8)
+		|| componentCount(originalBackground, 4) != componentCount(simplifiedBackground, 4))
+		return finish(EdgeSimplificationStatus::TopologyChanged);
+	const double allowedDistance = tolerance + std::sqrt(2.0) + 0.25;
+	if (maximumMaskDistance(original, simplified) > allowedDistance
+		|| maximumMaskDistance(simplified, original) > allowedDistance)
+		return finish(EdgeSimplificationStatus::DeviationExceeded);
+	return finish(EdgeSimplificationStatus::Applied);
+}
+}
+
+cv::Mat simplifyEdgeMask(const cv::Mat& edges, double tolerance,
+	EdgeSimplificationStats* stats) {
+	if (edges.empty() || edges.type() != CV_8UC1)
+		throw std::invalid_argument("Expected an 8-bit edge mask");
+	if (!std::isfinite(tolerance) || tolerance < 0)
+		throw std::invalid_argument("Invalid edge simplification tolerance");
+	cv::Mat binary;
+	cv::compare(edges, 0, binary, cv::CMP_GT);
+	if (tolerance == 0 || cv::countNonZero(binary) < 2) {
+		assessSimplification(binary, binary, tolerance, stats);
+		return binary;
+	}
+
+	cv::Mat simplified = cv::Mat::zeros(binary.size(), CV_8UC1);
+	const cv::Mat adjacency = buildAdjacency(binary);
+	cv::Mat visited = cv::Mat::zeros(binary.size(), CV_8UC1);
+	auto drawPath = [&](const EdgePath& path) {
+		if (path.points.empty()) return;
+		if (path.points.size() == 1) {
+			simplified.at<uchar>(path.points.front()) = 255;
+			return;
+		}
+		std::vector<cv::Point> points;
+		cv::approxPolyDP(path.points, points, tolerance, path.closed);
+		if (points.size() < 2) points = path.points;
+		if (!path.closed) {
+			points.front() = path.points.front();
+			points.back() = path.points.back();
+		}
+		cv::polylines(simplified, points, path.closed, cv::Scalar(255), 1, cv::LINE_8);
+	};
+
+	for (int y = 0; y < binary.rows; ++y)
+		for (int x = 0; x < binary.cols; ++x) {
+			const cv::Point point(x, y);
+			if (!activePixel(binary, point)) continue;
+			const int degree = std::popcount(adjacency.at<uchar>(point));
+			if (degree == 0) {
+				simplified.at<uchar>(point) = 255;
+				continue;
+			}
+			if (degree == 2) continue;
+			for (int direction = 0; direction < int(neighborOffsets.size()); ++direction)
+				if ((adjacency.at<uchar>(point) & (1u << direction)) != 0
+					&& !visitedEdge(visited, point, direction))
+					drawPath(traceEdgePath(adjacency, visited, point, direction));
+		}
+
+	for (int y = 0; y < binary.rows; ++y)
+		for (int x = 0; x < binary.cols; ++x) {
+			const cv::Point point(x, y);
+			if (!activePixel(binary, point)) continue;
+			for (int direction = 0; direction < int(neighborOffsets.size()); ++direction)
+				if ((adjacency.at<uchar>(point) & (1u << direction)) != 0
+					&& !visitedEdge(visited, point, direction)) {
+					drawPath(traceEdgePath(adjacency, visited, point, direction));
+					break;
+				}
+		}
+
+	return assessSimplification(binary, simplified, tolerance, stats)
+		== EdgeSimplificationStatus::Applied ? simplified : binary;
+}
+
+cv::Mat edgeMask(const cv::Mat& gray, const cv::Mat& source, const Options& options,
+	EdgeSimplificationStats* stats) {
 	validate(options);
+	if (stats) *stats = {};
 	if (gray.empty() || gray.type() != CV_8UC1)
 		throw std::invalid_argument("Expected grayscale image");
 	if (source.empty() || source.depth() != CV_8U || (source.channels() != 1
@@ -242,26 +455,28 @@ cv::Mat edgeMask(const cv::Mat& gray, const cv::Mat& source, const Options& opti
 		}
 	}
 	const double scale = double(gray.cols) / source.cols;
+	const double tolerance = options.edgeTolerance * scale;
+	cv::Mat originalEdges;
+	bool simplified = false;
+	EdgeSimplificationStats simplificationStats;
 	if (options.simplifyEdges && options.edgeTolerance > 0) {
-		std::vector<std::vector<cv::Point>> contours;
-		// Trace every boundary in order, including internal lines and holes.
-		// Open strokes are traced out and back rather than closed across their endpoints.
-		cv::findContours(edges, contours, cv::RETR_LIST, cv::CHAIN_APPROX_NONE);
-		cv::Mat simplified = cv::Mat::zeros(edges.size(), edges.type());
-		for (const auto& contour : contours) {
-			std::vector<cv::Point> points;
-			cv::approxPolyDP(contour, points, options.edgeTolerance * scale, true);
-			// Keep tiny strokes and loops that would otherwise collapse to a point or line.
-			if (points.size() < 2 || (cv::contourArea(contour) > 0 && cv::contourArea(points) == 0))
-				points = contour;
-			if (points.size() == 1) simplified.at<uchar>(points.front()) = 255;
-			else cv::polylines(simplified, points, true, cv::Scalar(255), 1, cv::LINE_8);
-		}
-		edges = simplified;
+		originalEdges = edges.clone();
+		edges = simplifyEdgeMask(edges, tolerance, &simplificationStats);
+		simplified = cv::countNonZero(originalEdges != edges) > 0;
 	}
 	const int width = std::max(1, int(std::lround(options.edgeWidth * scale)));
-	if (width > 1) cv::dilate(edges, edges,
-		cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(width, width)));
+	if (width > 1) {
+		const cv::Mat element = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(width, width));
+		cv::dilate(edges, edges, element);
+		if (simplified) {
+			cv::dilate(originalEdges, originalEdges, element);
+			EdgeSimplificationStats expandedStats;
+			if (assessSimplification(originalEdges, edges, tolerance, &expandedStats)
+				!= EdgeSimplificationStatus::Applied) edges = originalEdges;
+			simplificationStats = expandedStats;
+		}
+	}
+	if (stats && options.simplifyEdges) *stats = simplificationStats;
 	if (options.flipHorizontal) cv::flip(edges, edges, 1);
 	if (options.flipVertical) cv::flip(edges, edges, 0);
 	return edges;

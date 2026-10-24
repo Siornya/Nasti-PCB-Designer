@@ -476,7 +476,7 @@ ApplicationWindow {
 								Layout.fillWidth: true
 								from: 0
 								to: 1000
-								value: 10
+								value: 20
 								editable: true
 								enabled: window.extractingEdges && simplifyEdges.checked
 								validator: DoubleValidator { bottom: 0; top: 100; decimals: 1; locale: edgeTolerance.locale.name }
@@ -484,7 +484,7 @@ ApplicationWindow {
 								valueFromText: function(text, locale) { return Math.round(Number.fromLocaleString(locale, text) * 10) }
 								onValueModified: window.requestPreview()
 								ToolTip.visible: hovered
-								ToolTip.text: "按原图像素计算；容差越大，保留的细节越少。0 表示不简化。"
+								ToolTip.text: "按原图像素计算，默认 2 px；保留端点、分叉和闭环。状态栏会说明是否应用以及预计图元变化。"
 							}
 							Label {
 								text: window.outlineOnly ? "仅保留轮廓，按沉金导出；可与原图图层叠放"

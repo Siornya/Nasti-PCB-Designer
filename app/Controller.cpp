@@ -47,6 +47,29 @@ static QString layerTypeName(const QString& type) {
 	if (type == QStringLiteral("outline")) return QStringLiteral("描边");
 	return type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印");
 }
+static QString simplificationSummary(const binarizer::EdgeSimplificationStats& stats) {
+	using Status = binarizer::EdgeSimplificationStatus;
+	switch (stats.status) {
+	case Status::Applied: {
+		const int reduced = stats.originalRectangles - stats.resultRectangles;
+		const int percent = stats.originalRectangles > 0
+			? qRound(reduced * 100.0 / stats.originalRectangles) : 0;
+		return QStringLiteral("轮廓简化已应用：预计导出矩形 %1 → %2（减少 %3%）")
+			.arg(stats.originalRectangles).arg(stats.resultRectangles).arg(percent);
+	}
+	case Status::Unchanged:
+		return QStringLiteral("轮廓简化未改变结果：当前轮廓已较规整，或容差仍然较小");
+	case Status::PrimitiveCountIncreased:
+		return QStringLiteral("已保留原轮廓：候选结果会增加导出矩形（%1 → %2）")
+			.arg(stats.originalRectangles).arg(stats.candidateRectangles);
+	case Status::TopologyChanged:
+		return QStringLiteral("已保留原轮廓：候选结果会改变连通结构或闭环");
+	case Status::DeviationExceeded:
+		return QStringLiteral("已保留原轮廓：候选结果超出允许偏移");
+	case Status::NotRequested: return {};
+	}
+	return {};
+}
 static QImage renderSilk(const QImage& original, const cv::Mat& edges,
 	const binarizer::Options& options) {
 	if (edges.empty() && !options.flipHorizontal && !options.flipVertical) return {};
@@ -73,6 +96,7 @@ struct Comparison {
 	QImage original;
 	QImage silk;
 	QImage outline;
+	QString simplification;
 	int dotsPerMeterX = 0;
 	int dotsPerMeterY = 0;
 	bool hasPhysicalResolution = false;
@@ -85,6 +109,7 @@ struct Applied {
 	QImage image;
 	QImage silk;
 	QImage outline;
+	QString simplification;
 	QString error;
 };
 
@@ -201,7 +226,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	requestedSettings.edgeHighThreshold = p.value("edgeHighThreshold", 150).toInt();
 	requestedSettings.edgeWidth = p.value("edgeWidth", 2).toInt();
 	requestedSettings.simplifyEdges = p.value("simplifyEdges", false).toBool();
-	requestedSettings.edgeTolerance = p.value("edgeTolerance", 1.0).toDouble();
+	requestedSettings.edgeTolerance = p.value("edgeTolerance", 2.0).toDouble();
 	requestedSettings.equalize = p.value("equalize", false).toBool();
 	requestedSettings.clahe = p.value("clahe", false).toBool();
 	requestedSettings.invert = p.value("invert", false).toBool();
@@ -286,6 +311,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				layer.outputImage = batch.previews.front();
 				message = QStringLiteral("图层“%1”处理完成：%2 × %3")
 					.arg(layer.name).arg(layer.outputImage.width()).arg(layer.outputImage.height());
+				if (!batch.simplification.isEmpty()) message += QStringLiteral("；") + batch.simplification;
 				loadSelectedLayer();
 				refreshLayerPresentation();
 				emit changed();
@@ -310,6 +336,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 					{"parameters", parameters}, {"error", batch.errors[i]}});
 			}
 			message = QStringLiteral("选择一个方案，以原始分辨率重新处理。局部算法的缩略预览与原图细节可能不同。");
+			if (!batch.simplification.isEmpty())
+				message += QStringLiteral(" 缩略预览：") + batch.simplification;
 			loadSelectedLayer();
 			// Comparing alternatives does not replace the layer until a candidate is applied.
 			settings = requestedSettings;
@@ -341,7 +369,10 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			const auto gray = binarizer::preprocess(batch.source, options);
 			auto edgeOptions = options;
 			edgeOptions.extractEdges = options.extractEdges || outlineOnly;
-			const cv::Mat edges = edgeOptions.extractEdges ? binarizer::edgeMask(gray, batch.source, edgeOptions) : cv::Mat();
+			binarizer::EdgeSimplificationStats simplificationStats;
+			const cv::Mat edges = edgeOptions.extractEdges
+				? binarizer::edgeMask(gray, batch.source, edgeOptions, &simplificationStats) : cv::Mat();
+			batch.simplification = simplificationSummary(simplificationStats);
 			const cv::Mat overlay = options.extractEdges ? edges : cv::Mat();
 			for (int index = 0; index < int(binarizer::methods.size()); ++index) {
 				if (stop->load()) break;
@@ -405,6 +436,7 @@ void Controller::apply(int index) {
 			refreshLayerPresentation();
 			message = QStringLiteral("已应用到图层“%1”：%2 × %3")
 				.arg(artworkLayers[selectedLayer].name).arg(output.width()).arg(output.height());
+			if (!applied.simplification.isEmpty()) message += QStringLiteral("；") + applied.simplification;
 		}
 		emit changed();
 	});
@@ -416,7 +448,10 @@ void Controller::apply(int index) {
 				const cv::Mat gray = binarizer::preprocess(source, options);
 				auto edgeOptions = options;
 				edgeOptions.extractEdges = options.extractEdges || outlineOnly;
-				const cv::Mat edges = edgeOptions.extractEdges ? binarizer::edgeMask(gray, source, edgeOptions) : cv::Mat();
+				binarizer::EdgeSimplificationStats simplificationStats;
+				const cv::Mat edges = edgeOptions.extractEdges
+					? binarizer::edgeMask(gray, source, edgeOptions, &simplificationStats) : cv::Mat();
+				applied.simplification = simplificationSummary(simplificationStats);
 				const cv::Mat overlay = options.extractEdges ? edges : cv::Mat();
 				applied.image = display(binarizer::overlayEdges(binarizer::threshold(gray, options), overlay));
 				applied.silk = renderSilk(originalImage, overlay, options);
