@@ -687,10 +687,8 @@ void Controller::refreshLayerPresentation() {
 		composite.clear();
 		return;
 	}
-	const double scale = std::min(1.0, 1400.0 / std::max(canvasWidth, canvasHeight));
-	const int previewWidth = std::max(1, int(canvasWidth * scale));
-	const int previewHeight = std::max(1, int(canvasHeight * scale));
-	QImage preview(previewWidth, previewHeight, QImage::Format_RGB32);
+	// Keep source pixels available for the viewport's 100% and magnified views.
+	QImage preview(canvasWidth, canvasHeight, QImage::Format_RGB32);
 	preview.fill(solderMaskPreviewColor(maskColor));
 	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
 		const auto& layer = *iterator;
@@ -698,20 +696,14 @@ void Controller::refreshLayerPresentation() {
 		if (layer.type == QStringLiteral("silk")) {
 			if (layer.originalImage.isNull()) continue;
 			QImage source = layer.silkImage.isNull() ? layer.originalImage : layer.silkImage;
-			if (scale < 1.0)
-				source = source.scaled(std::max(1, int(source.width() * scale)),
-					std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 			QPainter painter(&preview);
-			painter.drawImage(QPointF(layer.x * scale, layer.y * scale), source);
+			painter.drawImage(QPointF(layer.x, layer.y), source);
 			continue;
 		}
 		if (binaryImage(layer).isNull()) continue;
 		QImage source = binaryImage(layer).convertToFormat(QImage::Format_Grayscale8);
-		if (scale < 1.0)
-			source = source.scaled(std::max(1, int(source.width() * scale)),
-				std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::FastTransformation);
-		const int offsetX = qRound(layer.x * scale);
-		const int offsetY = qRound(layer.y * scale);
+		const int offsetX = qRound(layer.x);
+		const int offsetY = qRound(layer.y);
 		const QRgb color = qRgb(222, 181, 72);
 		for (int y = 0; y < source.height() && y + offsetY < preview.height(); ++y) {
 			const uchar* sourceLine = source.constScanLine(y);

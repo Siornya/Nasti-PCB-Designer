@@ -511,15 +511,102 @@ ApplicationWindow {
 			RoundedFrame {
 				Layout.fillWidth: true
 				Layout.fillHeight: true
-				Image {
+				ColumnLayout {
 					anchors.fill: parent
-					source: window.showingOriginal ? window.sourceFile : window.displayedResult
-					fillMode: Image.PreserveAspectFit
-					smooth: window.showingOriginal
-					cache: false
+					anchors.margins: 4
+					spacing: 4
+					RowLayout {
+						Layout.fillWidth: true
+						spacing: 4
+						AppButton { text: "−"; implicitWidth: 32; enabled: previewViewport.hasImage; onClicked: previewViewport.zoomAt(previewViewport.effectiveZoom / 1.25, previewViewport.width / 2, previewViewport.height / 2) }
+						Label { text: Math.round(previewViewport.effectiveZoom * 100) + "%"; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignHCenter }
+						AppButton { text: "+"; implicitWidth: 32; enabled: previewViewport.hasImage; onClicked: previewViewport.zoomAt(previewViewport.effectiveZoom * 1.25, previewViewport.width / 2, previewViewport.height / 2) }
+						Item { Layout.fillWidth: true }
+						AppButton { text: "100%"; enabled: previewViewport.hasImage; onClicked: previewViewport.zoomAt(1, previewViewport.width / 2, previewViewport.height / 2) }
+						AppButton { text: "适应窗口"; enabled: previewViewport.hasImage; onClicked: previewViewport.fitImage() }
+					}
+					Item {
+						id: previewViewport
+						objectName: "previewViewport"
+						Layout.fillWidth: true
+						Layout.fillHeight: true
+						clip: true
+						property bool fitting: true
+						property real zoom: 1
+						property real panX: 0
+						property real panY: 0
+						readonly property bool hasImage: previewImage.status === Image.Ready && imageWidth > 0 && imageHeight > 0
+						readonly property real imageWidth: previewImage.implicitWidth
+						readonly property real imageHeight: previewImage.implicitHeight
+						readonly property real fitZoom: imageWidth > 0 && imageHeight > 0 ? Math.min(width / imageWidth, height / imageHeight) : 1
+						readonly property real effectiveZoom: fitting ? fitZoom : zoom
+						function fitImage() {
+							fitting = true
+							panX = 0
+							panY = 0
+						}
+						function clampPan() {
+							const maxX = Math.max(0, (imageWidth * effectiveZoom - width) / 2)
+							const maxY = Math.max(0, (imageHeight * effectiveZoom - height) / 2)
+							panX = Math.max(-maxX, Math.min(maxX, panX))
+							panY = Math.max(-maxY, Math.min(maxY, panY))
+						}
+						function zoomAt(value, anchorX, anchorY) {
+							if (!hasImage || effectiveZoom <= 0) return
+							const oldZoom = effectiveZoom
+							const nextZoom = Math.max(Math.min(0.01, fitZoom), Math.min(32, value))
+							const ratio = nextZoom / oldZoom
+							panX = (panX - (anchorX - width / 2)) * ratio + anchorX - width / 2
+							panY = (panY - (anchorY - height / 2)) * ratio + anchorY - height / 2
+							zoom = nextZoom
+							fitting = false
+							clampPan()
+						}
+						onWidthChanged: clampPan()
+						onHeightChanged: clampPan()
+						Connections {
+							target: window
+							function onSourceFileChanged() { previewViewport.fitImage() }
+							function onShowingOriginalChanged() { previewViewport.fitImage() }
+						}
+						Image {
+							id: previewImage
+							x: (previewViewport.width - width) / 2 + previewViewport.panX
+							y: (previewViewport.height - height) / 2 + previewViewport.panY
+							width: implicitWidth * previewViewport.effectiveZoom
+							height: implicitHeight * previewViewport.effectiveZoom
+							source: window.showingOriginal ? window.sourceFile : window.displayedResult
+							smooth: window.showingOriginal && previewViewport.effectiveZoom < 1
+							cache: false
+							onStatusChanged: { if (status === Image.Ready) previewViewport.clampPan() }
+						}
+						MouseArea {
+							anchors.fill: parent
+							acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+							cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+							property real lastX: 0
+							property real lastY: 0
+							onPressed: mouse => { lastX = mouse.x; lastY = mouse.y }
+							onPositionChanged: mouse => {
+								if (!pressed) return
+								previewViewport.panX += mouse.x - lastX
+								previewViewport.panY += mouse.y - lastY
+								lastX = mouse.x
+								lastY = mouse.y
+								previewViewport.clampPan()
+							}
+							onWheel: wheel => {
+								const delta = wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y / 240 : wheel.angleDelta.y / 480
+								previewViewport.zoomAt(previewViewport.effectiveZoom * Math.pow(2, delta), wheel.x, wheel.y)
+								wheel.accepted = true
+							}
+							onDoubleClicked: previewViewport.fitImage()
+						}
+						Label { anchors.centerIn: parent; text: "请选择或拖入图片"; visible: !window.sourceFile.toString().length }
+						DropArea { anchors.fill: parent; onDropped: drop => { if (drop.hasUrls) window.sourceFile = drop.urls[0] } }
+					}
+					Label { text: "滚轮缩放 · 拖动平移 · 双击适应窗口"; font.pixelSize: 11; color: window.mutedTextColor }
 				}
-				Label { anchors.centerIn: parent; text: "请选择或拖入图片"; visible: !window.sourceFile.toString().length }
-				DropArea { anchors.fill: parent; onDropped: drop => { if (drop.hasUrls) window.sourceFile = drop.urls[0] } }
 			}
 			RoundedFrame {
 				Layout.preferredWidth: 250
