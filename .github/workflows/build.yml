@@ -31,12 +31,15 @@ jobs:
                     - platform: windows-x64
                       runner: windows-2022
                       qt-arch: win64_msvc2022_64
+                      extension: exe
                     - platform: macos-arm64
                       runner: macos-15
                       qt-arch: clang_64
+                      extension: dmg
                     - platform: linux-x64
                       runner: ubuntu-24.04
                       qt-arch: linux_gcc_64
+                      extension: AppImage
         defaults:
             run:
                 shell: bash
@@ -69,9 +72,23 @@ jobs:
             - name: Install build and export tools
               run: python -m pip install -r requirements.txt "cmake==3.31.6" "ninja==1.11.1.3" "pyinstaller==6.16.0"
 
-            - name: Install virtual display
+            - name: Install Windows installer tools
+              if: runner.os == 'Windows'
+              run: |
+                  choco install nsis --no-progress -y
+                  echo 'C:\Program Files (x86)\NSIS' >> "$GITHUB_PATH"
+
+            - name: Install Linux packaging tools
               if: runner.os == 'Linux'
-              run: sudo apt-get install -y xvfb
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y xvfb squashfs-tools adwaita-icon-theme
+                  mkdir -p build/tools
+                  curl --fail --location --retry 3 \
+                      https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+                      --output build/tools/appimagetool.AppImage
+                  echo '95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  build/tools/appimagetool.AppImage' | sha256sum --check
+                  chmod +x build/tools/appimagetool.AppImage
 
             - name: Cache OpenCV
               id: opencv-cache
@@ -114,13 +131,11 @@ jobs:
                   cmake -S . -B build/app -G Ninja \
                       -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_APP_PACKAGE=ON \
                       -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR};${GITHUB_WORKSPACE}/build/deps/opencv" \
-                      -DCMAKE_INSTALL_LIBDIR=lib
+                      -DCMAKE_INSTALL_BINDIR=bin -DCMAKE_INSTALL_LIBDIR=lib
 
-            - name: Build app
-              run: cmake --build build/app --parallel 3
-
-            - name: Run app smoke check
+            - name: Build and test app
               run: |
+                  cmake --build build/app --parallel 3
                   export IMAGE_BINARIZER_PYTHON="$(python -c 'import sys; print(sys.executable)')"
                   ctest --test-dir build/app --output-on-failure
 
@@ -128,24 +143,169 @@ jobs:
               run: |
                   python -m PyInstaller --noconfirm --clean --onedir --name pcb-exporter \
                       --python-option "X utf8" --distpath build/exporter \
-                      --workpath build/pyinstaller --specpath build/pyinstaller img2enig.py
+                      --workpath build/pyinstaller --specpath build/pyinstaller img2pcb.py
 
-            - name: Deploy Qt runtime
-              run: cmake --install build/app --prefix "${GITHUB_WORKSPACE}/build/package"
+            - name: Deploy Qt and exporter
+              run: |
+                  cmake --install build/app --prefix "${GITHUB_WORKSPACE}/build/package"
+                  python - <<'PYCODE'
+                  from pathlib import Path
+                  import shutil
+                  import sys
+                  package = Path('build/package')
+                  destination = package / ('nasti-pcb-designer.app/Contents/Resources/exporter' if sys.platform == 'darwin' else 'exporter')
+                  shutil.copytree('build/exporter/pcb-exporter', destination, symlinks=sys.platform != 'win32')
+                  PYCODE
+                  if [[ "$RUNNER_OS" == "macOS" ]]; then
+                      codesign --force --deep --sign - build/package/nasti-pcb-designer.app
+                  fi
 
-            - name: Verify and archive package
+            - name: Verify bundled application
               run: |
                   if [[ "$RUNNER_OS" == "Linux" ]]; then
-                      xvfb-run -a python scripts/package_app.py --platform "${{ matrix.platform }}"
+                      xvfb-run -a python scripts/package_app.py --package-dir build/package
                   else
-                      python scripts/package_app.py --platform "${{ matrix.platform }}"
+                      python scripts/package_app.py --package-dir build/package
                   fi
+
+            - name: Create Windows installer
+              if: runner.os == 'Windows'
+              run: |
+                  mkdir -p build/installer
+                  cat > build/installer/CMakeLists.txt <<'CMAKE'
+                  cmake_minimum_required(VERSION 3.21)
+                  project(NastiInstaller VERSION 0.1.0 LANGUAGES NONE)
+                  set(CPACK_GENERATOR NSIS)
+                  string(REGEX REPLACE "^v" "" CPACK_PACKAGE_VERSION "$ENV{GITHUB_REF_NAME}")
+                  set(CPACK_PACKAGE_NAME "Nasti PCB Designer")
+                  set(CPACK_PACKAGE_VENDOR "Nasti PCB Designer")
+                  set(CPACK_PACKAGE_INSTALL_DIRECTORY "Nasti PCB Designer")
+                  set(CPACK_PACKAGE_FILE_NAME "nasti-pcb-designer-windows-x64")
+                  set(CPACK_INSTALLED_DIRECTORIES "$ENV{GITHUB_WORKSPACE}/build/package" ".")
+                  set(CPACK_PACKAGE_EXECUTABLES "nasti-pcb-designer" "Nasti PCB Designer")
+                  set(CPACK_NSIS_DISPLAY_NAME "Nasti PCB Designer")
+                  set(CPACK_NSIS_MUI_FINISHPAGE_RUN "nasti-pcb-designer.exe")
+                  include(CPack)
+                  CMAKE
+                  cmake -S build/installer -B build/installer-config
+                  cpack --config build/installer-config/CPackConfig.cmake -B dist
+
+            - name: Create macOS disk image
+              if: runner.os == 'macOS'
+              run: |
+                  mkdir -p build/dmg dist
+                  cp -R build/package/nasti-pcb-designer.app build/dmg/
+                  ln -s /Applications build/dmg/Applications
+                  hdiutil create -volname "Nasti PCB Designer" -srcfolder build/dmg \
+                      -ov -format UDZO dist/nasti-pcb-designer-macos-arm64.dmg
+
+            - name: Create Linux AppImage
+              if: runner.os == 'Linux'
+              run: |
+                  python - <<'PYCODE'
+                  from pathlib import Path
+                  import shutil
+                  appdir = Path('build/Nasti.AppDir')
+                  shutil.copytree('build/package', appdir / 'usr', symlinks=True)
+                  launcher = appdir / 'AppRun'
+                  launcher.write_text('#!/bin/sh\napp_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1\nexport LD_LIBRARY_PATH="$app_dir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$app_dir/usr/bin/nasti-pcb-designer" "$@"\n')
+                  launcher.chmod(0o755)
+                  (appdir / 'nasti-pcb-designer.desktop').write_text('[Desktop Entry]\nType=Application\nName=Nasti PCB Designer\nExec=nasti-pcb-designer\nIcon=nasti-pcb-designer\nCategories=Graphics;Engineering;\nTerminal=false\n')
+                  # AppImage requires an icon; use the system generic executable icon for now.
+                  icons = Path('/usr/share/icons/Adwaita')
+                  candidates = sorted(icons.glob('**/application-x-executable.png')) + sorted(icons.glob('**/application-x-executable*.svg'))
+                  if not candidates:
+                      raise SystemExit('System generic executable icon not found')
+                  icon = appdir / ('nasti-pcb-designer' + candidates[0].suffix)
+                  shutil.copyfile(candidates[0], icon)
+                  (appdir / '.DirIcon').symlink_to(icon.name)
+                  PYCODE
+                  mkdir -p dist
+                  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 build/tools/appimagetool.AppImage \
+                      --no-appstream build/Nasti.AppDir dist/nasti-pcb-designer-linux-x64.AppImage
+                  chmod +x dist/nasti-pcb-designer-linux-x64.AppImage
+
+            - name: Verify Linux AppImage
+              if: runner.os == 'Linux'
+              run: |
+                  xvfb-run -a python - <<'PYCODE'
+                  from pathlib import Path
+                  import subprocess
+                  import sys
+                  import tempfile
+                  sys.path.insert(0, 'scripts')
+                  from package_app import package_environment
+                  environment = package_environment()
+                  environment['APPIMAGE_EXTRACT_AND_RUN'] = '1'
+                  image = Path('dist/nasti-pcb-designer-linux-x64.AppImage').resolve()
+                  with tempfile.TemporaryDirectory() as directory:
+                      screenshot = Path(directory) / 'smoke.png'
+                      subprocess.run([str(image), '--smoke-screenshot', str(screenshot)], cwd=directory, env=environment, check=True, timeout=120)
+                      if not screenshot.is_file() or screenshot.stat().st_size == 0:
+                          raise SystemExit('AppImage did not render its QML scene')
+                  PYCODE
+
+            - name: Verify Windows installed application
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  $destination = Join-Path $env:RUNNER_TEMP 'nasti-installed'
+                  $installer = Resolve-Path 'dist/nasti-pcb-designer-windows-x64.exe'
+                  $process = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$destination" -Wait -PassThru
+                  if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+                  python scripts/package_app.py --package-dir "$destination"
+                  if ($LASTEXITCODE -ne 0) { throw 'Installed application failed its smoke check' }
+
+            - name: Verify macOS disk image
+              if: runner.os == 'macOS'
+              run: |
+                  mount_dir="${RUNNER_TEMP}/nasti-dmg"
+                  mkdir -p "$mount_dir"
+                  hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" dist/nasti-pcb-designer-macos-arm64.dmg
+                  trap 'hdiutil detach "$mount_dir"' EXIT
+                  python scripts/package_app.py --package-dir "$mount_dir"
 
             - name: Upload desktop app
               uses: actions/upload-artifact@v4
               with:
                   name: nasti-pcb-designer-${{ matrix.platform }}
-                  path: dist/nasti-pcb-designer-${{ matrix.platform }}.*
+                  path: dist/nasti-pcb-designer-${{ matrix.platform }}.${{ matrix.extension }}
                   if-no-files-found: error
                   retention-days: 30
                   compression-level: 0
+
+    release:
+        name: Publish three platform downloads
+        needs: build
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        steps:
+            - name: Download verified installers
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: nasti-pcb-designer-*
+                  merge-multiple: true
+                  path: installers
+
+            - name: Attach files to GitHub Release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  RELEASE_TAG: ${{ github.ref_name }}
+              run: |
+                  files=(
+                      installers/nasti-pcb-designer-windows-x64.exe
+                      installers/nasti-pcb-designer-macos-arm64.dmg
+                      installers/nasti-pcb-designer-linux-x64.AppImage
+                  )
+                  for file in "${files[@]}"; do test -s "$file"; done
+                  created=false
+                  if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+                      gh release create "$RELEASE_TAG" --verify-tag --generate-notes --draft
+                      created=true
+                  fi
+                  gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+                  if [[ "$created" == "true" ]]; then
+                      gh release edit "$RELEASE_TAG" --draft=false
+                  fi

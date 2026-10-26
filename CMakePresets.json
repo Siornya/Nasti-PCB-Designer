@@ -1,0 +1,38 @@
+{
+	"version": 3,
+	"cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+	"configurePresets": [
+		{
+			"name": "release",
+			"displayName": "Desktop development build",
+			"binaryDir": "${sourceDir}/build/release",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release",
+				"BUILD_GUI": true,
+				"BUILD_TESTING": true,
+				"BUILD_APP_PACKAGE": false
+			}
+		},
+		{
+			"name": "core",
+			"inherits": "release",
+			"displayName": "Core processing and tests without Qt",
+			"binaryDir": "${sourceDir}/build/core",
+			"cacheVariables": { "BUILD_GUI": false }
+		}
+	],
+	"buildPresets": [
+		{ "name": "release", "configurePreset": "release", "configuration": "Release" },
+		{ "name": "core", "configurePreset": "core", "configuration": "Release" }
+	],
+	"testPresets": [
+		{
+			"name": "release",
+			"configurePreset": "release",
+			"configuration": "Release",
+			"output": { "outputOnFailure": true },
+			"execution": { "noTestsAction": "error" }
+		},
+		{ "name": "core", "inherits": "release", "configurePreset": "core" }
+	]
+}

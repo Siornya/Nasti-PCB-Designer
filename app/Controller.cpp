@@ -774,7 +774,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		root = QFileInfo(exporter).absolutePath();
 		break;
 	}
-	const QString script = QDir(root).filePath(QStringLiteral("img2enig.py"));
+	const QString script = QDir(root).filePath(QStringLiteral("img2pcb.py"));
 	if (exporter.isEmpty() && !QFileInfo::exists(script)) {
 		message = QStringLiteral("找不到 Python PCB 导出器：%1").arg(script);
 		emit changed();

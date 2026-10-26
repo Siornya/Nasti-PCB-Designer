@@ -2,7 +2,17 @@
 
 将普通图片处理为沉金图案或保留原色的彩色丝印，再转换成可导入嘉立创EDA专业版的 PCB 图案工程。
 
-桌面应用使用 C++20、Qt 6 Quick/QML 和 OpenCV C++。旧版 Python 界面和二值化实现已经移除；Qt 只在最后一步调用 `img2enig.py` 生成 PCB 工程。
+## 下载与安装
+
+在 Release 中选择对应系统的文件：
+
+| 平台 | 架构 | 下载产物 | 启动方式 |
+| --- | --- | --- | --- |
+| Windows | x64 | `nasti-pcb-designer-windows-x64.exe` | 运行安装程序，安装后从开始菜单启动 |
+| macOS | Apple Silicon / ARM64 | `nasti-pcb-designer-macos-arm64.dmg` | 打开后将 `.app` 拖入 Applications |
+| Linux | x64 | `nasti-pcb-designer-linux-x64.AppImage` | 赋予执行权限后运行，无需解压 |
+
+下载文件已包含运行所需依赖，无需另装 Qt 或 Python。Linux 下载后首次运行可执行 `chmod +x nasti-pcb-designer-linux-x64.AppImage`；没有 FUSE 时可用 `APPIMAGE_EXTRACT_AND_RUN=1 ./nasti-pcb-designer-linux-x64.AppImage`。Linux 需要兼容 Ubuntu 24.04 的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
 
 ## 功能
 
@@ -12,72 +22,10 @@
 - 提供 8 种阈值方法，包括 Triangle 和 Li 自动阈值；Try All 使用双列大图、显示自动计算的阈值，并可直接调整算法参数后重新比较。
 - 调整曝光、对比度、伽马、降噪、锐化和局部增强等参数。
 - 沉金和丝印图层都可选择用 Canny 提取并叠加图案边缘；可调节双阈值和描边宽度，默认线宽 2 px。沉金保留原有二值化结果，丝印保留原色和透明度；透明底图片也会提取透明边界。图案内部线条同样可被提取。
-- 可选 Douglas–Peucker 轮廓简化，默认关闭、默认容差 2 px，容差按原图像素计算。简化会保留开放线条端点、分叉和闭环，并限制相对原轮廓的最大偏移；如果结果破坏拓扑或增加导出矩形图元，会自动保留原轮廓。状态栏会显示是否应用以及预计图元变化，简化后的轮廓同时用于预览和导出。
+- 可选轮廓简化，默认容差 2 px；在保留线条端点、分叉和闭环的前提下减少细小锯齿。无法安全简化时保留原轮廓，状态栏会显示处理结果。
 - 根据图片 DPI 自动计算 PCB 物理尺寸；没有可靠 DPI 时按 300 DPI 计算。
 - 选择绿、红、黄、蓝、白或雅黑阻焊并导出 `.epro2`，默认使用白色阻焊。
 - 自动跟随系统的浅色模式和深色模式。
-
-## 项目结构
-
-- `core/`：C++/OpenCV 图片处理核心。
-- `app/`：Qt 后台任务、图层管理和 PCB 导出调用。
-- `qml/`：Qt Quick 界面。
-- `img2enig.py`：接收 C++ 输出的图层清单并生成 `.epro2`。
-- `tests/`：应用启动、图片处理和 PCB 导出的基础运行检查。
-
-## 启动桌面应用
-
-当前机器已在项目目录准备好依赖，可以直接运行：
-
-```sh
-./run-local.sh
-```
-
-## 构建
-
-依赖 CMake 3.21 以上、支持 C++20 的编译器、Qt 6.5 以上（Quick、QuickControls2、Concurrent），以及 OpenCV 4（core、imgproc、photo）。TIFF、WebP 等格式还需要 Qt 对应的图片插件。当前项目目录已经准备了本地 CMake、Qt 和 OpenCV，可以直接执行：
-
-```sh
-./.native-tools/cmake/data/bin/cmake \
-    -S . -B build-native -DCMAKE_BUILD_TYPE=Release
-./.native-tools/cmake/data/bin/cmake --build build-native --parallel
-./.native-tools/cmake/data/bin/ctest \
-    --test-dir build-native --output-on-failure
-./build-native/bin/nasti-pcb-designer
-```
-
-使用 `-DBUILD_GUI=OFF` 可以只构建不依赖 Qt 的图片处理核心。
-
-### GitHub Actions 三平台构建
-
-| 平台 | 架构 | 下载产物 | 启动方式 |
-| --- | --- | --- | --- |
-| Windows | x64 | `nasti-pcb-designer-windows-x64.zip` | `package/bin/nasti-pcb-designer.exe` |
-| macOS | Apple Silicon / ARM64 | `nasti-pcb-designer-macos-arm64.tar.gz` | `package/nasti-pcb-designer.app` |
-| Linux | x64 | `nasti-pcb-designer-linux-x64.tar.gz` | `package/run.sh` |
-
-产物包含 Qt/QML 运行库和独立 PCB 导出器，无需另装 Python。Linux 使用 Ubuntu 24.04 构建，需要兼容的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
-
-工作流固定使用 Qt 6.8.3、OpenCV 4.12.0，缓存静态 OpenCV；构建后做一次应用启动、图片处理和 PCB 导出的基础运行检查，并确认打包后的程序可以启动、生成可读取的 PCB 文件。
-
-只要项目目录包含 `.native-deps/opencv` 和 `.native-deps/qt`，CMake 就会自动找到这两套依赖，无需另外设置 `OpenCV_DIR` 或 `CMAKE_PREFIX_PATH`。如果改用系统安装的依赖，可按实际安装位置配置：
-
-```sh
-cmake -S . -B build-native -DCMAKE_BUILD_TYPE=Release \
-    -DOpenCV_DIR="/path/to/opencv4" \
-    -DCMAKE_PREFIX_PATH="/path/to/Qt/6.x"
-```
-
-## Python 导出环境
-
-桌面应用只在生成 PCB 文件时调用 Python 导出器。创建虚拟环境并安装导出依赖：
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
-
-源码运行时，程序会优先使用项目中的 `.venv`。也可以通过 `IMAGE_BINARIZER_PYTHON` 指定其他 Python 解释器。GitHub Actions 的下载产物优先调用自带的独立导出器。
 
 ## 使用桌面应用
 
@@ -89,58 +37,53 @@ python3 -m venv .venv
 4. 选择阻焊颜色和输出目录。
 5. 保存黑白图片，或生成包含所有可见图层的 PCB 文件。
 
-## PCB 导出器接口
+导出的 `.epro2` 文件可在嘉立创EDA专业版中打开。正面图案写入顶层，背面图案写入底层；沉金图案生成铜层和阻焊开窗，彩色丝印写入对应面的丝印层。板边四周固定增加 1 mm。
 
-Qt 应用会把可见图层写入临时 JSON 清单，再调用 `img2enig.py` 完成最后一步 PCB 工程生成。Python 不再负责灰度转换或二值化：沉金输入必须是 C++ 生成的单通道纯黑白 PNG，丝印输入会保留原始颜色和透明区域。正面沉金写入顶层铜和顶层阻焊，背面沉金写入底层铜和底层阻焊；彩色丝印同样写入对应面的丝印层。板边四周固定增加 1 mm。
+生产前请在嘉立创EDA中检查铜层、阻焊层、DRC、2D/3D 和 Gerber 预览，并确认最小线宽、间距和阻焊偏位符合板厂要求。
 
-图层坐标使用画布像素，X 向右、Y 向下。清单格式如下：
+## img2pcb 导出器
 
-```json
-{
-    "canvas": {
-        "width": 1920,
-        "height": 1080,
-        "widthMm": 162.56,
-        "heightMm": 91.44
-    },
-    "projectName": "角色铭牌",
-    "solderMaskColor": "#191B1D",
-    "layers": [
-        {"source": "background.png", "type": "silk", "side": "front", "x": 0, "y": 0},
-        {"source": "character.png", "type": "silk", "side": "front", "x": 420, "y": 120},
-        {"source": "signature.binary.png", "type": "enig", "side": "back", "x": 1380, "y": 850}
-    ]
-}
-```
+导出器可以单独运行，相关文档提供在 [Gist](https://gist.github.com/Siornya/2ec228784c060a1ce5e84344bb4d70f9)
+
+## 项目结构
+
+| 目录或文件 | 用途 |
+| --- | --- |
+| `core/` | 图像预处理、二值化和边缘提取 |
+| `app/` | 应用逻辑、图层管理和导出调用 |
+| `qml/` | 桌面界面 |
+| `img2pcb.py` | PCB 工程导出器 |
+| `tests/` | 图像处理、应用和打包测试 |
+
+## 从源码构建
+
+准备 CMake 3.21 以上、C++20 编译器、Qt 6.5 以上和 OpenCV 4。Qt 需包含 Quick、QuickControls2、Concurrent 模块，OpenCV 需包含 core、imgproc、photo 模块。
 
 ```sh
-.venv/bin/python img2enig.py --manifest layers.json -o output.epro2
+cmake --preset release
+cmake --build --preset release --parallel
+ctest --preset release
 ```
 
-清单中的相对图片路径以清单文件所在目录为基准；`side` 可设为 `front` 或 `back`，省略时默认为 `front`。图层可以设置 `"visible": false` 跳过导出。Qt 会根据选中图层的 DPI 计算 `widthMm` 和 `heightMm`；没有可靠 DPI 时，Qt 和 Python 都按默认 300 DPI 换算物理尺寸。
+源码运行时，PCB 导出还需要 Python 及 `requirements.txt` 中的依赖。仅构建和测试图像处理核心时，可将上述预设替换为 `core`，无需安装 Qt 或 Python。
 
-为方便调试，也保留重复的 `--layer` 参数：
+如果 CMake 找不到依赖，按安装位置配置：
 
 ```sh
-.venv/bin/python img2enig.py \
-    --layer background.png silk 0 0 \
-    --layer signature.binary.png enig 1380 850 \
-    --canvas-width 1920 \
-    --canvas-height 1080 \
-    --width-mm 162.56 \
-    --height-mm 91.44 \
-    -o output.epro2
+cmake --preset release \
+	-DOpenCV_DIR="/path/to/opencv4" \
+	-DCMAKE_PREFIX_PATH="/path/to/Qt/6.x"
 ```
 
-每个 `--layer` 后依次填写图片路径、`enig|silk`、左上 X 和左上 Y，使用该接口时图层默认位于正面。需要混合正反面或图层较多时使用 JSON 清单。画布宽高和输出路径必须提供。
+构建后运行 `build/release/bin/nasti-pcb-designer`；Windows 多配置构建的程序位于 `build/release/bin/Release/`，构建命令需在 Visual Studio 开发者命令提示符中执行。
 
-`.epro2` 内含 `project2.json`，以及包含 `BOARD`、`PCB`、`CONFIG` 文档的 `.epru` 日志。当前不生成 SQLite 格式的 `.eprj2`。
+## Python 导出环境
 
-## 测试
+创建源码运行所需的导出环境：
 
 ```sh
-cmake --build build-native --parallel
-ctest --test-dir build-native --output-on-failure
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
-生产前应在嘉立创EDA中检查铜层、阻焊层、DRC、2D/3D 和 Gerber 预览，并确认最小线宽、间距和阻焊偏位符合板厂要求。
+源码运行时，程序会优先使用项目中的 `.venv`。也可以通过 `IMAGE_BINARIZER_PYTHON` 指定其他 Python 解释器。

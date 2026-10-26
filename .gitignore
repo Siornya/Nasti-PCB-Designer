@@ -40,3 +40,4 @@ dist/
 .native-tools/
 .native-deps/
 build-native/
+CMakeUserPresets.json

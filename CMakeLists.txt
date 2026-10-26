@@ -11,7 +11,8 @@ set(BUNDLED_OPENCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.native-deps/opencv/lib/cmak
 if(NOT OpenCV_DIR AND EXISTS "${BUNDLED_OPENCV_DIR}/OpenCVConfig.cmake")
 	set(OpenCV_DIR "${BUNDLED_OPENCV_DIR}" CACHE PATH "OpenCV package directory" FORCE)
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.native-deps/qt/lib/cmake/Qt6/Qt6Config.cmake")
+if(NOT Qt6_DIR AND NOT CMAKE_PREFIX_PATH
+	AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.native-deps/qt/lib/cmake/Qt6/Qt6Config.cmake")
 	list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.native-deps/qt")
 	if(APPLE AND NOT CMAKE_OSX_SYSROOT)
 		file(GLOB COMPATIBLE_MACOS_SDKS
