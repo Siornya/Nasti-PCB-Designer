@@ -23,6 +23,7 @@ inline constexpr std::array methods {Method::Fixed, Method::Adaptive, Method::Ot
 	Method::Triangle, Method::Li, Method::Sauvola, Method::Wolf, Method::Bernsen};
 std::string_view name(Method method);
 struct Options {
+	bool operator==(const Options&) const = default;
 	Method method = Method::Adaptive;
 	int threshold = 127;
 	int blockSize = 31;

@@ -27,6 +27,8 @@ private:
 
 class Controller : public QObject {
 	Q_OBJECT
+	Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
+	Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
 	Q_PROPERTY(bool busy READ busy NOTIFY changed)
 	Q_PROPERTY(QString status READ status NOTIFY changed)
 	Q_PROPERTY(QVariantList candidates READ candidates NOTIFY changed)
@@ -45,6 +47,10 @@ class Controller : public QObject {
 public:
 	explicit Controller(ImageStore* images, QObject* parent = nullptr);
 	~Controller() override;
+	bool canUndo() const { return !active && !past.empty(); }
+	bool canRedo() const { return !active && !future.empty(); }
+	Q_INVOKABLE void undo();
+	Q_INVOKABLE void redo();
 	bool busy() const { return active; }
 	QString status() const { return message; }
 	QVariantList candidates() const { return rows; }
@@ -79,14 +85,19 @@ public:
 	Q_INVOKABLE void cancel();
 	Q_INVOKABLE void invalidate();
 	Q_INVOKABLE void save(const QUrl& destination);
+	Q_INVOKABLE bool saveProject(const QUrl& destination);
+	Q_INVOKABLE bool openProject(const QUrl& source);
 	Q_INVOKABLE void generatePcb(const QUrl& source, const QString& directory);
 signals:
 	void changed();
 private:
+	static QVariantMap parametersFor(const binarizer::Options& options);
+	static binarizer::Options optionsFrom(const QVariantMap& parameters, int methodIndex);
 	struct ArtworkLayer {
 		int id = 0;
 		QString name;
 		QString sourcePath;
+		bool embedded = false;
 		QString type = QStringLiteral("enig");
 		QString side = QStringLiteral("front");
 		bool visible = true;
@@ -102,7 +113,17 @@ private:
 		int dotsPerMeterY = 0;
 		bool hasPhysicalResolution = false;
 	};
-	void run(const QUrl& source, const QVariantMap& parameters, int singleMethod);
+	struct Snapshot {
+		std::vector<ArtworkLayer> layers;
+		int width, height;
+		QString color, side;
+		int frontSelection, backSelection;
+	};
+	std::vector<Snapshot> past, future;
+	Snapshot snapshot() const;
+	void recordEdit();
+	void restore(Snapshot state);
+	void run(const QUrl& source, const QVariantMap& parameters, int singleMethod, bool recordPreview = true);
 	void finishPcb(QProcess* process, int exitCode, bool processFailed);
 	void loadSelectedLayer();
 	void refreshLayerPresentation();

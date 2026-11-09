@@ -133,12 +133,58 @@ Controller::~Controller() {
 		pcbProcess->waitForFinished();
 	}
 }
+Controller::Snapshot Controller::snapshot() const {
+	return {artworkLayers, minimumCanvasWidth, minimumCanvasHeight, maskColor,
+		activeSideValue, frontSelectedLayerId, backSelectedLayerId};
+}
+
+void Controller::recordEdit() {
+	constexpr size_t historyLimit = 32;
+	if (past.size() >= historyLimit) past.erase(past.begin());
+	past.push_back(snapshot());
+	future.clear();
+}
+
+void Controller::restore(Snapshot state) {
+	artworkLayers = std::move(state.layers);
+	minimumCanvasWidth = state.width;
+	minimumCanvasHeight = state.height;
+	maskColor = state.color;
+	activeSideValue = state.side;
+	frontSelectedLayerId = state.frontSelection;
+	backSelectedLayerId = state.backSelection;
+	rows.clear();
+	selectLayerForActiveSide();
+	loadSelectedLayer();
+	refreshLayerPresentation();
+	emit changed();
+}
+
+void Controller::undo() {
+	if (!canUndo()) return;
+	future.push_back(snapshot());
+	auto state = std::move(past.back());
+	past.pop_back();
+	message = QStringLiteral("已撤销");
+	restore(std::move(state));
+}
+
+void Controller::redo() {
+	if (!canRedo()) return;
+	past.push_back(snapshot());
+	auto state = std::move(future.back());
+	future.pop_back();
+	message = QStringLiteral("已重做");
+	restore(std::move(state));
+}
+
 void Controller::invalidate() {
 	if (active) return;
 	rows.clear();
 	result.clear();
 	output = {};
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())) {
+		if (!artworkLayers[selectedLayer].outputImage.isNull()) recordEdit();
 		artworkLayers[selectedLayer].outputImage = {};
 		artworkLayers[selectedLayer].silkImage = {};
 		artworkLayers[selectedLayer].outlineImage = {};
@@ -154,9 +200,7 @@ QString Controller::selectedSourceUrl() const {
 	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
 	return QUrl::fromLocalFile(artworkLayers[selectedLayer].sourcePath).toString();
 }
-QVariantMap Controller::selectedParameters() const {
-	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
-	const auto& options = artworkLayers[selectedLayer].settings;
+QVariantMap Controller::parametersFor(const binarizer::Options& options) {
 	return {
 		{"method", int(options.method)}, {"threshold", options.threshold},
 		{"blockSize", options.blockSize}, {"adaptiveC", options.adaptiveC},
@@ -173,6 +217,10 @@ QVariantMap Controller::selectedParameters() const {
 		{"clahe", options.clahe}, {"invert", options.invert},
 		{"flipHorizontal", options.flipHorizontal}, {"flipVertical", options.flipVertical}
 	};
+}
+QVariantMap Controller::selectedParameters() const {
+	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
+	return parametersFor(artworkLayers[selectedLayer].settings);
 }
 bool Controller::hasExportableLayers() const {
 	return std::any_of(artworkLayers.cbegin(), artworkLayers.cend(), [this](const ArtworkLayer& layer) {
@@ -191,20 +239,8 @@ void Controller::preview(const QUrl& url, const QVariantMap& p, int method) {
 	if (method < 0 || method >= int(binarizer::methods.size())) return;
 	run(url, p, method);
 }
-void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
-	if (active) return;
-	if (!url.isLocalFile()) {
-		message = QStringLiteral("请先选择本地图片");
-		emit changed();
-		return;
-	}
-	rows.clear();
+binarizer::Options Controller::optionsFrom(const QVariantMap& p, int methodIndex) {
 	binarizer::Options requestedSettings;
-	int methodIndex = int(binarizer::Method::Adaptive);
-	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size()))
-		methodIndex = int(artworkLayers[selectedLayer].settings.method);
-	methodIndex = p.value("method", methodIndex).toInt();
-	if (singleMethod >= 0) methodIndex = singleMethod;
 	if (methodIndex >= 0 && methodIndex < int(binarizer::methods.size()))
 		requestedSettings.method = binarizer::methods[methodIndex];
 	requestedSettings.threshold = p.value("threshold", 127).toInt();
@@ -232,6 +268,22 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	requestedSettings.invert = p.value("invert", false).toBool();
 	requestedSettings.flipHorizontal = p.value("flipHorizontal", false).toBool();
 	requestedSettings.flipVertical = p.value("flipVertical", false).toBool();
+	return requestedSettings;
+}
+void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod, bool recordPreview) {
+	if (active) return;
+	if (!url.isLocalFile()) {
+		message = QStringLiteral("请先选择本地图片");
+		emit changed();
+		return;
+	}
+	rows.clear();
+	int methodIndex = int(binarizer::Method::Adaptive);
+	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size()))
+		methodIndex = int(artworkLayers[selectedLayer].settings.method);
+	methodIndex = p.value("method", methodIndex).toInt();
+	if (singleMethod >= 0) methodIndex = singleMethod;
+	auto requestedSettings = optionsFrom(p, methodIndex);
 	settings = requestedSettings;
 	const QString sourcePath = url.toLocalFile();
 	const bool createLayer = selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())
@@ -248,7 +300,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	options.maxDimension = singleMethod < 0 ? 640 : 0;
 	auto* watcher = new QFutureWatcher<Comparison>(this);
 	connect(watcher, &QFutureWatcher<Comparison>::finished, this,
-		[this, watcher, stop, singleMethod, sourcePath, requestedSettings, createLayer, targetLayerId] {
+		[this, watcher, stop, singleMethod, sourcePath, requestedSettings, createLayer, targetLayerId, recordPreview] {
 		const auto batch = watcher->result();
 		watcher->deleteLater();
 		active = false;
@@ -259,6 +311,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			int targetIndex = -1;
 			const QSize placementCanvas = canvasSize();
 			if (createLayer) {
+				recordEdit();
 				ArtworkLayer layer;
 				layer.id = nextLayerId++;
 				layer.name = QFileInfo(sourcePath).completeBaseName();
@@ -276,13 +329,17 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				return;
 			}
 			auto& layer = artworkLayers[targetIndex];
-			if (layer.originalImage != batch.original) {
+			const bool sourceChanged = layer.originalImage != batch.original
+				|| layer.dotsPerMeterX != batch.dotsPerMeterX || layer.dotsPerMeterY != batch.dotsPerMeterY;
+			if (!createLayer && recordPreview && (sourceChanged || (singleMethod >= 0
+				&& (layer.settings != requestedSettings || layer.outputImage.isNull())))) recordEdit();
+			if (sourceChanged) {
+				layer.sourceImage = batch.source;
+				layer.originalImage = batch.original;
 				layer.outputImage = {};
 				layer.silkImage = {};
 				layer.outlineImage = {};
 			}
-			layer.sourceImage = batch.source;
-			layer.originalImage = batch.original;
 			if (singleMethod >= 0) {
 				layer.silkImage = batch.silk;
 				layer.outlineImage = batch.outline;
@@ -304,9 +361,6 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 			selectedLayer = targetIndex;
 			selectedLayerIdForSide(activeSideValue) = artworkLayers[targetIndex].id;
 			++revision;
-			const QString key = QString::number(revision) + "/original";
-			images->put(key, batch.original);
-			original = "image://results/" + key;
 			if (singleMethod >= 0) {
 				layer.outputImage = batch.previews.front();
 				message = QStringLiteral("图层“%1”处理完成：%2 × %3")
@@ -345,11 +399,13 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 		}
 		emit changed();
 	});
-	watcher->setFuture(QtConcurrent::run([path = url.toLocalFile(), options, stop, singleMethod, outlineOnly] {
+	const QImage embedded = !createLayer && artworkLayers[selectedLayer].embedded
+		? artworkLayers[selectedLayer].originalImage : QImage();
+	watcher->setFuture(QtConcurrent::run([path = url.toLocalFile(), embedded, options, stop, singleMethod, outlineOnly] {
 		Comparison batch;
 		try {
 			QImageReader reader(path);
-			QImage image = reader.read();
+			QImage image = embedded.isNull() ? reader.read() : embedded;
 			if (image.isNull()) throw std::runtime_error(reader.errorString().toStdString());
 			batch.dotsPerMeterX = image.dotsPerMeterX();
 			batch.dotsPerMeterY = image.dotsPerMeterY();
@@ -425,6 +481,7 @@ void Controller::apply(int index) {
 		else {
 			for (int layerIndex = 0; layerIndex < int(artworkLayers.size()); ++layerIndex) {
 				if (artworkLayers[layerIndex].id != targetLayerId) continue;
+				recordEdit();
 				selectedLayer = layerIndex;
 				artworkLayers[layerIndex].outputImage = applied.image;
 				artworkLayers[layerIndex].silkImage = applied.silk;
@@ -482,6 +539,8 @@ void Controller::setLayerType(int index, const QString& type) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
 	if (type != QStringLiteral("enig") && type != QStringLiteral("silk") && type != QStringLiteral("outline")) return;
 	auto& layer = artworkLayers[index];
+	if (layer.type == type) return;
+	recordEdit();
 	layer.type = type;
 	if (type == QStringLiteral("outline") && layer.outlineImage.isNull() && !layer.sourceImage.empty()) {
 		if (activeSideValue != layer.side) setActiveSide(layer.side);
@@ -489,7 +548,7 @@ void Controller::setLayerType(int index, const QString& type) {
 		selectedLayerIdForSide(activeSideValue) = layer.id;
 		rows.clear();
 		loadSelectedLayer();
-		preview(QUrl::fromLocalFile(layer.sourcePath), selectedParameters(), int(layer.settings.method));
+		run(QUrl::fromLocalFile(layer.sourcePath), selectedParameters(), int(layer.settings.method), false);
 		return;
 	}
 	refreshLayerPresentation();
@@ -500,6 +559,8 @@ void Controller::setLayerType(int index, const QString& type) {
 
 void Controller::setLayerVisible(int index, bool visible) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
+	if (artworkLayers[index].visible == visible) return;
+	recordEdit();
 	artworkLayers[index].visible = visible;
 	refreshLayerPresentation();
 	emit changed();
@@ -510,6 +571,7 @@ void Controller::removeLayer(int index) {
 	const QString name = artworkLayers[index].name;
 	const QString side = artworkLayers[index].side;
 	const int removedId = artworkLayers[index].id;
+	recordEdit();
 	artworkLayers.erase(artworkLayers.begin() + index);
 	if (selectedLayerIdForSide(side) == removedId) selectedLayerIdForSide(side) = -1;
 	selectLayerForActiveSide();
@@ -528,6 +590,7 @@ void Controller::moveLayer(int index, int offset) {
 	while (destination >= 0 && destination < int(artworkLayers.size())
 		&& artworkLayers[destination].side != side) destination += offset;
 	if (destination < 0 || destination >= int(artworkLayers.size())) return;
+	recordEdit();
 	std::swap(artworkLayers[index], artworkLayers[destination]);
 	selectLayerForActiveSide();
 	refreshLayerPresentation();
@@ -537,8 +600,12 @@ void Controller::moveLayer(int index, int offset) {
 void Controller::setLayerTopLeft(int index, double x, double y) {
 	if (active || index < 0 || index >= int(artworkLayers.size())
 		|| !std::isfinite(x) || !std::isfinite(y)) return;
-	artworkLayers[index].x = std::max(0.0, x);
-	artworkLayers[index].y = std::max(0.0, y);
+	x = std::max(0.0, x);
+	y = std::max(0.0, y);
+	if (artworkLayers[index].x == x && artworkLayers[index].y == y) return;
+	recordEdit();
+	artworkLayers[index].x = x;
+	artworkLayers[index].y = y;
 	refreshLayerPresentation();
 	emit changed();
 }
@@ -555,7 +622,8 @@ void Controller::setSolderMaskColor(const QString& color) {
 		QStringLiteral("green"), QStringLiteral("red"), QStringLiteral("yellow"),
 		QStringLiteral("blue"), QStringLiteral("white"), QStringLiteral("black")
 	};
-	if (!colors.contains(color) || maskColor == color) return;
+	if (active || !colors.contains(color) || maskColor == color) return;
+	recordEdit();
 	maskColor = color;
 	refreshLayerPresentation();
 	emit changed();
@@ -752,11 +820,6 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	if (!QFileInfo::exists(projectSource) && !artworkLayers.empty())
 		projectSource = artworkLayers.front().sourcePath;
 	const QFileInfo sourceFile(projectSource);
-	if (!sourceFile.isFile()) {
-		message = QStringLiteral("请先选择输入图片");
-		emit changed();
-		return;
-	}
 	QString root = QStringLiteral(BINARIZER_SOURCE_DIR);
 	QString exporter;
 	const QDir applicationDirectory(QCoreApplication::applicationDirPath());

@@ -75,7 +75,21 @@ int main(int argc, char** argv) {
 			&& hasOutline(simplified, QRect(24, 29, 7, 4))
 			&& simplified.pixelColor(20, 20) == QColor(Qt::white),
 			"Contour simplification lost internal, unfilled contours");
+		controller.undo();
+		check(!controller.selectedParameters().value("simplifyEdges").toBool(),
+			"Undo did not restore the previous processing parameters");
+		controller.undo();
+		check(controller.layerRows().isEmpty() && controller.canvasWidth() == 0 && !controller.canUndo(),
+			"Undo import did not restore the empty canvas");
+		controller.redo();
+		controller.redo();
+		check(controller.selectedParameters().value("simplifyEdges").toBool() && !controller.canRedo(),
+			"Redo did not restore processed layer");
+		controller.removeLayer(controller.selectedLayerIndex());
+		controller.undo();
+		check(controller.hasExportableLayers(), "Undo deletion lost exportable artwork");
 		controller.setLayerType(controller.selectedLayerIndex(), QStringLiteral("silk"));
+		check(!controller.canRedo(), "New edit retained obsolete redo history");
 		// The silkscreen preview previously bypassed the processed artwork.
 		const auto thumbnail = controller.layerRows().front().toMap().value("thumbnail").toString();
 		const QImage silk = images->requestImage(thumbnail.mid(QStringLiteral("image://results/").size()), nullptr, {});
@@ -96,6 +110,23 @@ int main(int argc, char** argv) {
 		check(images->requestImage("selected", nullptr, {}).pixelColor(20, 20) == QColor(Qt::black),
 			"Switching back to ENIG lost the original threshold result");
 		controller.setLayerType(controller.selectedLayerIndex(), QStringLiteral("outline"));
+		const auto project = QUrl::fromLocalFile(directory.filePath("artwork.nasti"));
+		controller.setSolderMaskColor("blue");
+		controller.setLayerTopLeft(controller.selectedLayerIndex(), 8, 6);
+		check(controller.saveProject(project), "Cannot save editable project");
+		controller.removeLayer(controller.selectedLayerIndex());
+		check(QFile::remove(input), "Cannot remove external source");
+		check(controller.openProject(project) && controller.solderMaskColor() == "blue"
+			&& controller.canvasWidth() == 72 && controller.canvasHeight() == 70
+			&& controller.layerRows().front().toMap().value("type") == "outline"
+			&& controller.selectedParameters().value("threshold").toInt() == 255
+			&& !controller.canUndo(), "Project did not restore the artwork");
+		check(!controller.openProject(QUrl::fromLocalFile(output)) && controller.hasExportableLayers(),
+			"Failed open discarded the current document");
+		controller.preview(url, QVariantMap{{"threshold", 42}}, 0);
+		wait(controller);
+		check(controller.selectedParameters().value("threshold").toInt() == 42,
+			"Cannot edit restored layer without external source");
 		controller.generatePcb(url, directory.path());
 		wait(controller);
 		QFile pcb(directory.filePath(QStringLiteral("input.epro2")));

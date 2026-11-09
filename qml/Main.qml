@@ -10,7 +10,24 @@ ApplicationWindow {
 	height: 800
 	minimumWidth: 1080
 	minimumHeight: 740
-	title: "Nasti PCB Designer"
+	property url projectFile
+	title: projectFile.toString().length ? controller.localPath(projectFile) + " — Nasti PCB Designer" : "Nasti PCB Designer"
+	menuBar: MenuBar {
+		Menu {
+			title: "文件"
+			enabled: !controller.busy && !window.pendingPreview && !comparison.visible
+			Action { text: "打开工程…"; shortcut: StandardKey.Open; onTriggered: openProjectDialog.open() }
+			Action {
+				text: "保存工程"
+				shortcut: StandardKey.Save
+				onTriggered: {
+					if (window.projectFile.toString().length) controller.saveProject(window.projectFile)
+					else saveProjectDialog.open()
+				}
+			}
+			Action { text: "工程另存为…"; shortcut: StandardKey.SaveAs; onTriggered: saveProjectDialog.open() }
+		}
+	}
 	font.pixelSize: 15
 	property url sourceFile
 	property bool automaticOutput: true
@@ -52,6 +69,30 @@ ApplicationWindow {
 	palette.mid: borderColor
 	palette.placeholderText: mutedTextColor
 
+	function navigateHistory(forward) {
+		selectingLayer = true
+		if (forward) controller.redo()
+		else controller.undo()
+		sourceFile = controller.selectedSourceUrl
+		applySelectedParameters()
+		displayedResult = controller.compositeUrl
+		showingOriginal = false
+		selectingLayer = false
+	}
+	Action {
+		id: undoAction
+		text: "撤销"
+		shortcut: StandardKey.Undo
+		enabled: controller.canUndo && !window.pendingPreview && !comparison.visible
+		onTriggered: window.navigateHistory(false)
+	}
+	Action {
+		id: redoAction
+		text: "重做"
+		shortcut: StandardKey.Redo
+		enabled: controller.canRedo && !window.pendingPreview && !comparison.visible
+		onTriggered: window.navigateHistory(true)
+	}
 	function parameters() {
 		return { method: method.currentIndex, threshold: threshold.value, blockSize: block.value,
 			adaptiveC: adaptiveC.value, localK: localK.value / 100,
@@ -243,6 +284,23 @@ ApplicationWindow {
 			border.color: window.borderColor
 		}
 	}
+	component FoldableGroup: ControlsGroup {
+		id: section
+		topPadding: toggle.height + 8
+		implicitHeight: toggle.checked ? topPadding + implicitContentHeight + bottomPadding : toggle.height
+		contentItem.visible: toggle.checked
+		background.visible: toggle.checked
+		label: AppButton {
+			id: toggle
+			width: section.width
+			checkable: true
+			text: section.title
+			contentItem: RowLayout {
+				Label { text: section.title; font.bold: true; Layout.fillWidth: true }
+				Label { text: toggle.checked ? "▾" : "▸"; color: window.mutedTextColor }
+			}
+		}
+	}
 	component RoundedFrame: Frame {
 		padding: 9
 		background: Rectangle {
@@ -284,6 +342,29 @@ ApplicationWindow {
 		selectByMouse: true
 		enabled: !controller.busy && controller.selectedLayer >= 0
 		validator: DoubleValidator { bottom: 0; decimals: 2; notation: DoubleValidator.StandardNotation }
+	}
+	FileDialog {
+		id: openProjectDialog
+		title: "打开工程"
+		nameFilters: ["Nasti PCB 工程 (*.nasti)"]
+		onAccepted: {
+			if (controller.openProject(selectedFile)) {
+				window.projectFile = selectedFile
+				window.sourceFile = controller.selectedSourceUrl
+				window.applySelectedParameters()
+				window.showingOriginal = false
+				window.automaticOutput = true
+				outputPath.text = controller.sourceDirectory(selectedFile)
+			}
+		}
+	}
+	FileDialog {
+		id: saveProjectDialog
+		title: "保存工程"
+		fileMode: FileDialog.SaveFile
+		nameFilters: ["Nasti PCB 工程 (*.nasti)"]
+		defaultSuffix: "nasti"
+		onAccepted: if (controller.saveProject(selectedFile)) window.projectFile = selectedFile
 	}
 	FileDialog {
 		id: openDialog
@@ -376,7 +457,7 @@ ApplicationWindow {
 							}
 						}
 					}
-					ControlsGroup {
+					FoldableGroup {
 						title: "预处理"
 						GridLayout {
 							anchors.fill: parent
@@ -394,7 +475,7 @@ ApplicationWindow {
 							ValueSlider { id: sharpen }
 						}
 					}
-					ControlsGroup {
+					FoldableGroup {
 						title: "降噪与增强"
 						GridLayout {
 							anchors.fill: parent
@@ -430,7 +511,7 @@ ApplicationWindow {
 								onClicked: window.requestPreview()
 							}
 							Label { text: "仅描边（Canny）"; visible: window.outlineOnly; Layout.columnSpan: 2 }
-							Label { text: "低阈值"; enabled: window.extractingEdges }
+							Label { text: "低阈值"; visible: window.extractingEdges }
 							SpinBox {
 								id: edgeLowThreshold
 								Layout.fillWidth: true
@@ -438,10 +519,10 @@ ApplicationWindow {
 								to: 1000
 								value: 50
 								editable: true
-								enabled: window.extractingEdges
+								visible: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
-							Label { text: "高阈值"; enabled: window.extractingEdges }
+							Label { text: "高阈值"; visible: window.extractingEdges }
 							SpinBox {
 								id: edgeHighThreshold
 								Layout.fillWidth: true
@@ -449,10 +530,10 @@ ApplicationWindow {
 								to: 1000
 								value: 150
 								editable: true
-								enabled: window.extractingEdges
+								visible: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
-							Label { text: "描边宽度"; enabled: window.extractingEdges }
+							Label { text: "描边宽度"; visible: window.extractingEdges }
 							SpinBox {
 								id: edgeWidth
 								Layout.fillWidth: true
@@ -460,17 +541,17 @@ ApplicationWindow {
 								to: 100
 								value: 2
 								editable: true
-								enabled: window.extractingEdges
+								visible: window.extractingEdges
 								onValueModified: window.requestPreview()
 							}
 							CheckBox {
 								id: simplifyEdges
 								text: "轮廓简化（Douglas–Peucker）"
 								Layout.columnSpan: 2
-								enabled: window.extractingEdges
+								visible: window.extractingEdges
 								onClicked: window.requestPreview()
 							}
-							Label { text: "简化容差（px）"; enabled: window.extractingEdges && simplifyEdges.checked }
+							Label { text: "简化容差（px）"; visible: window.extractingEdges && simplifyEdges.checked }
 							SpinBox {
 								id: edgeTolerance
 								Layout.fillWidth: true
@@ -478,7 +559,7 @@ ApplicationWindow {
 								to: 1000
 								value: 20
 								editable: true
-								enabled: window.extractingEdges && simplifyEdges.checked
+								visible: window.extractingEdges && simplifyEdges.checked
 								validator: DoubleValidator { bottom: 0; top: 100; decimals: 1; locale: edgeTolerance.locale.name }
 								textFromValue: function(value, locale) { return Number(value / 10).toLocaleString(locale, 'f', 1) }
 								valueFromText: function(text, locale) { return Math.round(Number.fromLocaleString(locale, text) * 10) }
@@ -487,6 +568,7 @@ ApplicationWindow {
 								ToolTip.text: "按原图像素计算，默认 2 px；保留端点、分叉和闭环。状态栏会说明是否应用以及预计图元变化。"
 							}
 							Label {
+								visible: window.extractingEdges
 								text: window.outlineOnly ? "仅保留轮廓，按沉金导出；可与原图图层叠放"
 									: "沉金叠加到二值图，丝印叠加到原色图；可提取内部线条"
 								Layout.columnSpan: 2
@@ -602,7 +684,19 @@ ApplicationWindow {
 							}
 							onDoubleClicked: previewViewport.fitImage()
 						}
-						Label { anchors.centerIn: parent; text: "请选择或拖入图片"; visible: !window.sourceFile.toString().length }
+						ColumnLayout {
+							anchors.centerIn: parent
+							visible: !window.sourceFile.toString().length
+							spacing: 8
+							AppButton {
+								text: "选择图片"
+								accent: true
+								Layout.alignment: Qt.AlignHCenter
+								enabled: !controller.busy
+								onClicked: openDialog.open()
+							}
+							Label { text: "也可以将图片拖到这里"; color: window.mutedTextColor }
+						}
 						DropArea { anchors.fill: parent; onDropped: drop => { if (drop.hasUrls) window.sourceFile = drop.urls[0] } }
 					}
 					Label { text: "滚轮缩放 · 拖动平移 · 双击适应窗口"; font.pixelSize: 11; color: window.mutedTextColor }
@@ -727,6 +821,11 @@ ApplicationWindow {
 								color: window.mutedTextColor
 							}
 						}
+					}
+					RowLayout {
+						Layout.fillWidth: true
+						AppButton { action: undoAction; Layout.fillWidth: true }
+						AppButton { action: redoAction; Layout.fillWidth: true }
 					}
 					RowLayout {
 						Layout.fillWidth: true

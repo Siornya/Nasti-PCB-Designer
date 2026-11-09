@@ -38,7 +38,7 @@ option(BUILD_APP_PACKAGE "Install a desktop bundle with Qt runtime dependencies"
 if(BUILD_GUI)
 	find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Concurrent)
 	qt_standard_project_setup(REQUIRES 6.5)
-	qt_add_executable(nasti_pcb_designer app/main.cpp app/Controller.cpp app/Controller.hpp)
+	qt_add_executable(nasti_pcb_designer app/main.cpp app/Controller.cpp app/ControllerProject.cpp app/Controller.hpp)
 	set_target_properties(nasti_pcb_designer PROPERTIES
 		OUTPUT_NAME "nasti-pcb-designer"
 		WIN32_EXECUTABLE TRUE
@@ -68,7 +68,7 @@ if(BUILD_TESTING)
 	add_test(NAME binarizer_core COMMAND binarizer_tests)
 endif()
 if(BUILD_TESTING AND BUILD_GUI)
-	qt_add_executable(controller_tests tests/ControllerTests.cpp app/Controller.cpp app/Controller.hpp)
+	qt_add_executable(controller_tests tests/ControllerTests.cpp app/Controller.cpp app/ControllerProject.cpp app/Controller.hpp)
 	target_include_directories(controller_tests PRIVATE app)
 	target_compile_definitions(controller_tests PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 	target_link_libraries(controller_tests PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
