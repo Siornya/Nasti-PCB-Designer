@@ -12,21 +12,12 @@ ApplicationWindow {
 	minimumHeight: 740
 	property url projectFile
 	title: projectFile.toString().length ? controller.localPath(projectFile) + " — Nasti PCB Designer" : "Nasti PCB Designer"
-	menuBar: MenuBar {
-		Menu {
-			title: "文件"
-			enabled: !controller.busy && !window.pendingPreview && !comparison.visible
-			Action { text: "打开工程…"; shortcut: StandardKey.Open; onTriggered: openProjectDialog.open() }
-			Action {
-				text: "保存工程"
-				shortcut: StandardKey.Save
-				onTriggered: {
-					if (window.projectFile.toString().length) controller.saveProject(window.projectFile)
-					else saveProjectDialog.open()
-				}
-			}
-			Action { text: "工程另存为…"; shortcut: StandardKey.SaveAs; onTriggered: saveProjectDialog.open() }
-		}
+	menuBar: AppMenuBar {
+		editorWindow: window
+		projectController: controller
+		openDialog: openProjectDialog
+		saveDialog: saveProjectDialog
+		interactionEnabled: !window.pendingPreview && !comparison.visible
 	}
 	font.pixelSize: 15
 	property url sourceFile
@@ -78,20 +69,6 @@ ApplicationWindow {
 		displayedResult = controller.compositeUrl
 		showingOriginal = false
 		selectingLayer = false
-	}
-	Action {
-		id: undoAction
-		text: "撤销"
-		shortcut: StandardKey.Undo
-		enabled: controller.canUndo && !window.pendingPreview && !comparison.visible
-		onTriggered: window.navigateHistory(false)
-	}
-	Action {
-		id: redoAction
-		text: "重做"
-		shortcut: StandardKey.Redo
-		enabled: controller.canRedo && !window.pendingPreview && !comparison.visible
-		onTriggered: window.navigateHistory(true)
 	}
 	function parameters() {
 		return { method: method.currentIndex, threshold: threshold.value, blockSize: block.value,
@@ -215,6 +192,17 @@ ApplicationWindow {
 			window.syncCoordinates()
 		}
 	}
+	TextMetrics {
+		id: integerValueMetrics
+		font: window.font
+		text: "-100"
+	}
+	TextMetrics {
+		id: decimalValueMetrics
+		font: window.font
+		text: "3.00"
+	}
+	readonly property int sliderValueWidth: Math.ceil(Math.max(integerValueMetrics.width, decimalValueMetrics.width)) + 2
 	component ValueSlider: RowLayout {
 		property alias value: slider.value
 		property alias from: slider.from
@@ -257,7 +245,9 @@ ApplicationWindow {
 		}
 		Label {
 			text: parent.decimal ? (slider.value / 100).toFixed(2) : Math.round(slider.value)
-			Layout.preferredWidth: 40
+			Layout.minimumWidth: window.sliderValueWidth
+			Layout.preferredWidth: window.sliderValueWidth
+			Layout.maximumWidth: window.sliderValueWidth
 		}
 	}
 	component ControlsGroup: GroupBox {
@@ -418,7 +408,8 @@ ApplicationWindow {
 			spacing: 16
 			ScrollView {
 				id: controlsScroll
-				Layout.preferredWidth: 350
+				// Remove only the unused number-column width, preserving slider travel.
+				Layout.preferredWidth: 350 - (40 - window.sliderValueWidth)
 				Layout.fillHeight: true
 				clip: true
 				ColumnLayout {
@@ -821,11 +812,6 @@ ApplicationWindow {
 								color: window.mutedTextColor
 							}
 						}
-					}
-					RowLayout {
-						Layout.fillWidth: true
-						AppButton { action: undoAction; Layout.fillWidth: true }
-						AppButton { action: redoAction; Layout.fillWidth: true }
 					}
 					RowLayout {
 						Layout.fillWidth: true

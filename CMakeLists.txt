@@ -46,7 +46,9 @@ if(BUILD_GUI)
 		MACOSX_BUNDLE_BUNDLE_NAME "Nasti PCB Designer"
 		MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.nasti.pcbdesigner")
 	set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
-	qt_add_qml_module(nasti_pcb_designer URI Binarizer VERSION 1.0 QML_FILES qml/Main.qml)
+	set_source_files_properties(qml/AppMenuBar.qml PROPERTIES QT_RESOURCE_ALIAS AppMenuBar.qml)
+	qt_add_qml_module(nasti_pcb_designer URI Binarizer VERSION 1.0
+		QML_FILES qml/Main.qml qml/AppMenuBar.qml)
 	target_compile_definitions(nasti_pcb_designer PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 	target_link_libraries(nasti_pcb_designer PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
 	if(BUILD_APP_PACKAGE)
