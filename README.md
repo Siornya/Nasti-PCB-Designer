@@ -1,4 +1,4 @@
-# Nasti PCB Designer
+# NastiDesigner
 
 将普通图片处理为沉金图案或保留原色的彩色丝印，再转换成可导入嘉立创EDA专业版的 PCB 图案工程。
 
@@ -8,11 +8,11 @@
 
 | 平台 | 架构 | 下载产物 | 启动方式 |
 | --- | --- | --- | --- |
-| Windows | x64 | `nasti-pcb-designer-windows-x64.exe` | 运行安装程序，安装后从开始菜单启动 |
-| macOS | Apple Silicon / ARM64 | `nasti-pcb-designer-macos-arm64.dmg` | 打开后将 `.app` 拖入 Applications |
-| Linux | x64 | `nasti-pcb-designer-linux-x64.AppImage` | 赋予执行权限后运行，无需解压 |
+| Windows | x64 | `nasti-designer-windows-x64.exe` | 运行安装程序，安装后从开始菜单启动 |
+| macOS | Apple Silicon / ARM64 | `nasti-designer-macos-arm64.dmg` | 打开后将 `.app` 拖入 Applications |
+| Linux | x64 | `nasti-designer-linux-x64.AppImage` | 赋予执行权限后运行，无需解压 |
 
-下载文件已包含运行所需依赖，无需另装 Qt 或 Python。Linux 下载后首次运行可执行 `chmod +x nasti-pcb-designer-linux-x64.AppImage`；没有 FUSE 时可用 `APPIMAGE_EXTRACT_AND_RUN=1 ./nasti-pcb-designer-linux-x64.AppImage`。Linux 需要兼容 Ubuntu 24.04 的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
+下载文件已包含运行所需依赖，无需另装 Qt 或 Python。Linux 下载后首次运行可执行 `chmod +x nasti-designer-linux-x64.AppImage`；没有 FUSE 时可用 `APPIMAGE_EXTRACT_AND_RUN=1 ./nasti-designer-linux-x64.AppImage`。Linux 需要兼容 Ubuntu 24.04 的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
 
 ## 功能
 
@@ -51,8 +51,8 @@
 
 | 目录或文件 | 用途 |
 | --- | --- |
-| `core/` | 图像预处理、二值化和边缘提取 |
-| `app/` | 应用逻辑、图层管理和导出调用 |
+| `src/Binarizer.cpp`、`src/Binarizer.hpp` | 图像预处理、二值化和边缘提取 |
+| `src/app/` | 应用逻辑、图层管理和导出调用 |
 | `qml/` | 桌面界面 |
 | `img2pcb.py` | PCB 工程导出器 |
 | `tests/` | 图像处理、应用和打包测试 |
@@ -77,7 +77,7 @@ cmake --preset release \
 	-DCMAKE_PREFIX_PATH="/path/to/Qt/6.x"
 ```
 
-构建后运行 `build/release/bin/nasti-pcb-designer`；Windows 多配置构建的程序位于 `build/release/bin/Release/`，构建命令需在 Visual Studio 开发者命令提示符中执行。
+构建后运行 `build/release/bin/nasti-designer`；Windows 多配置构建的程序位于 `build/release/bin/Release/`，构建命令需在 Visual Studio 开发者命令提示符中执行。
 
 ## Python 导出环境
 

@@ -10,8 +10,8 @@
 
 int main(int argc, char* argv[]) {
 	QGuiApplication app(argc, argv);
-	QGuiApplication::setApplicationName("Nasti PCB Designer");
-	QGuiApplication::setApplicationDisplayName("Nasti PCB Designer");
+	QGuiApplication::setApplicationName("NastiDesigner");
+	QGuiApplication::setApplicationDisplayName("NastiDesigner");
 	QQuickStyle::setStyle("Fusion");
 	auto* images = new ImageStore;
 	Controller controller(images);

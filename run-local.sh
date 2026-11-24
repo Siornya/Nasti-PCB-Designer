@@ -11,4 +11,4 @@ fi
 cd "$project_root"
 "$cmake_bin" --preset release
 "$cmake_bin" --build --preset release --parallel
-exec "$project_root/build/release/bin/nasti-pcb-designer" "$@"
+exec "$project_root/build/release/bin/nasti-designer" "$@"

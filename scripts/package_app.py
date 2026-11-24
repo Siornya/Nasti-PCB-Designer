@@ -39,11 +39,11 @@ def main() -> None:
 	windows = sys.platform == "win32"
 	macos = sys.platform == "darwin"
 	if macos:
-		bundle = package / "nasti-pcb-designer.app/Contents"
-		app = bundle / "MacOS/nasti-pcb-designer"
+		bundle = package / "nasti-designer.app/Contents"
+		app = bundle / "MacOS/nasti-designer"
 		exporter_directory = bundle / "Resources/exporter"
 	else:
-		app = package / "bin" / ("nasti-pcb-designer.exe" if windows else "nasti-pcb-designer")
+		app = package / "bin" / ("nasti-designer.exe" if windows else "nasti-designer")
 		exporter_directory = package / "exporter"
 	exporter = exporter_directory / ("pcb-exporter.exe" if windows else "pcb-exporter")
 	for executable in (app, exporter):

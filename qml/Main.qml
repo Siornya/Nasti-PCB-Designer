@@ -11,7 +11,7 @@ ApplicationWindow {
 	minimumWidth: 1080
 	minimumHeight: 740
 	property url projectFile
-	title: projectFile.toString().length ? controller.localPath(projectFile) + " — Nasti PCB Designer" : "Nasti PCB Designer"
+	title: projectFile.toString().length ? controller.localPath(projectFile) + " — NastiDesigner" : "NastiDesigner"
 	menuBar: AppMenuBar {
 		editorWindow: window
 		projectController: controller
@@ -341,7 +341,7 @@ ApplicationWindow {
 	FileDialog {
 		id: openProjectDialog
 		title: "打开工程"
-		nameFilters: ["Nasti PCB 工程 (*.nasti)"]
+		nameFilters: ["NastiDesigner 工程 (*.nasti)"]
 		onAccepted: {
 			if (controller.openProject(selectedFile)) {
 				window.projectFile = selectedFile
@@ -357,7 +357,7 @@ ApplicationWindow {
 		id: saveProjectDialog
 		title: "保存工程"
 		fileMode: FileDialog.SaveFile
-		nameFilters: ["Nasti PCB 工程 (*.nasti)"]
+		nameFilters: ["NastiDesigner 工程 (*.nasti)"]
 		defaultSuffix: "nasti"
 		onAccepted: if (controller.saveProject(selectedFile)) window.projectFile = selectedFile
 	}

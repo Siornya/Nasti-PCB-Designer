@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NastiPCBDesigner VERSION 0.1 LANGUAGES CXX)
+project(NastiDesigner VERSION 0.3 LANGUAGES CXX)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,8 +29,8 @@ if(NOT Qt6_DIR AND NOT CMAKE_PREFIX_PATH
 endif()
 
 find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc photo)
-add_library(binarization_core core/Binarizer.cpp)
-target_include_directories(binarization_core PUBLIC core ${OpenCV_INCLUDE_DIRS})
+add_library(binarization_core src/Binarizer.cpp)
+target_include_directories(binarization_core PUBLIC src ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(binarization_core PUBLIC ${OpenCV_LIBS})
 option(BUILD_GUI "Build the Qt Quick desktop app" ON)
 option(BUILD_APP_PACKAGE "Install a desktop bundle with Qt runtime dependencies" OFF)
@@ -39,29 +39,29 @@ if(BUILD_GUI)
 	find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Concurrent)
 	qt_standard_project_setup(REQUIRES 6.5)
 	file(GLOB_RECURSE app_sources CONFIGURE_DEPENDS
-		"app/*.cpp"
-		"app/*.h"
-		"app/*.hpp")
-	qt_add_executable(nasti_pcb_designer ${app_sources})
-	set_target_properties(nasti_pcb_designer PROPERTIES
-		OUTPUT_NAME "nasti-pcb-designer"
+		"src/app/*.cpp"
+		"src/app/*.h"
+		"src/app/*.hpp")
+	qt_add_executable(nasti_designer ${app_sources})
+	set_target_properties(nasti_designer PROPERTIES
+		OUTPUT_NAME "nasti-designer"
 		WIN32_EXECUTABLE TRUE
 		MACOSX_BUNDLE ${BUILD_APP_PACKAGE}
-		MACOSX_BUNDLE_BUNDLE_NAME "Nasti PCB Designer"
+		MACOSX_BUNDLE_BUNDLE_NAME "NastiDesigner"
 		MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.nasti.pcbdesigner")
 	set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 	set_source_files_properties(qml/AppMenuBar.qml PROPERTIES QT_RESOURCE_ALIAS AppMenuBar.qml)
-	qt_add_qml_module(nasti_pcb_designer URI Binarizer VERSION 1.0
+	qt_add_qml_module(nasti_designer URI Binarizer VERSION 1.0
 		QML_FILES qml/Main.qml qml/AppMenuBar.qml)
-	target_compile_definitions(nasti_pcb_designer PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-	target_link_libraries(nasti_pcb_designer PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
+	target_compile_definitions(nasti_designer PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+	target_link_libraries(nasti_designer PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
 	if(BUILD_APP_PACKAGE)
 		include(GNUInstallDirs)
-		install(TARGETS nasti_pcb_designer
+		install(TARGETS nasti_designer
 			BUNDLE DESTINATION .
 			RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 		qt_generate_deploy_qml_app_script(
-			TARGET nasti_pcb_designer
+			TARGET nasti_designer
 			OUTPUT_SCRIPT deploy_script)
 		install(SCRIPT ${deploy_script})
 	endif()
@@ -75,9 +75,9 @@ if(BUILD_TESTING)
 endif()
 if(BUILD_TESTING AND BUILD_GUI)
 	set(controller_test_sources ${app_sources})
-	list(REMOVE_ITEM controller_test_sources "${CMAKE_CURRENT_SOURCE_DIR}/app/main.cpp")
+	list(REMOVE_ITEM controller_test_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp")
 	qt_add_executable(controller_tests tests/ControllerTests.cpp ${controller_test_sources})
-	target_include_directories(controller_tests PRIVATE app)
+	target_include_directories(controller_tests PRIVATE src/app)
 	target_compile_definitions(controller_tests PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 	target_link_libraries(controller_tests PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
 	add_test(NAME app_smoke COMMAND controller_tests)
