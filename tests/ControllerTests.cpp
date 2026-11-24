@@ -121,6 +121,12 @@ int main(int argc, char** argv) {
 			&& controller.layerRows().front().toMap().value("type") == "outline"
 			&& controller.selectedParameters().value("threshold").toInt() == 255
 			&& !controller.canUndo(), "Project did not restore the artwork");
+		const auto grayFile = controller.outputFile(url, directory.path(), true);
+		controller.save(grayFile, true);
+		const QImage gray(grayFile.toLocalFile());
+		check(gray.size() == source.size() && gray.pixelColor(32, 32) == QColor(180, 180, 180)
+			&& gray.pixelColor(0, 0) == QColor(Qt::white),
+			"Grayscale export lost midtones or the embedded source");
 		check(!controller.openProject(QUrl::fromLocalFile(output)) && controller.hasExportableLayers(),
 			"Failed open discarded the current document");
 		controller.preview(url, QVariantMap{{"threshold", 42}}, 0);

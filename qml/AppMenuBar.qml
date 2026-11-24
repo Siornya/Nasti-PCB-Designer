@@ -9,13 +9,58 @@ MenuBar {
 	required property FileDialog openDialog
 	required property FileDialog saveDialog
 	required property bool interactionEnabled
+	readonly property var translations: ({
+		zh: {
+			file: "文件",
+			openProject: "打开工程…",
+			saveProject: "保存工程",
+			saveProjectAs: "另存为工程…",
+			exportMenu: "导出",
+			binaryImage: "黑白图片…",
+			grayscaleImage: "灰度图片…",
+			edit: "编辑",
+			undo: "撤销",
+			redo: "重做"
+		},
+		en: {
+			file: "File",
+			openProject: "Open Project…",
+			saveProject: "Save Project",
+			saveProjectAs: "Save Project As…",
+			exportMenu: "Export",
+			binaryImage: "Black and White Image…",
+			grayscaleImage: "Grayscale Image…",
+			edit: "Edit",
+			undo: "Undo",
+			redo: "Redo"
+		},
+		ja: {
+			file: "ファイル",
+			openProject: "プロジェクトを開く…",
+			saveProject: "プロジェクトを保存",
+			saveProjectAs: "名前を付けて保存…",
+			exportMenu: "エクスポート",
+			binaryImage: "白黒画像…",
+			grayscaleImage: "グレースケール画像…",
+			edit: "編集",
+			undo: "元に戻す",
+			redo: "やり直す"
+		}
+	})
+	readonly property var labels: {
+		for (const tag of locale.uiLanguages) {
+			const language = tag.split("-")[0].toLowerCase()
+			if (translations[language]) return translations[language]
+		}
+		return translations.en
+	}
 
 	Menu {
-		title: "文件"
+		title: menuBar.labels.file
 		enabled: !menuBar.projectController.busy && menuBar.interactionEnabled
-		Action { text: "打开工程…"; shortcut: StandardKey.Open; onTriggered: menuBar.openDialog.open() }
+		Action { text: menuBar.labels.openProject; shortcut: StandardKey.Open; onTriggered: menuBar.openDialog.open() }
 		Action {
-			text: "保存工程"
+			text: menuBar.labels.saveProject
 			shortcut: StandardKey.Save
 			onTriggered: {
 				if (menuBar.editorWindow.projectFile.toString().length)
@@ -23,18 +68,25 @@ MenuBar {
 				else menuBar.saveDialog.open()
 			}
 		}
-		Action { text: "另存为工程…"; shortcut: StandardKey.SaveAs; onTriggered: menuBar.saveDialog.open() }
+		Action { text: menuBar.labels.saveProjectAs; shortcut: StandardKey.SaveAs; onTriggered: menuBar.saveDialog.open() }
 	}
 	Menu {
-		title: "编辑"
+		title: menuBar.labels.exportMenu
+		enabled: menuBar.interactionEnabled && !menuBar.projectController.busy
+			&& menuBar.projectController.resultUrl.length > 0
+		Action { text: menuBar.labels.binaryImage; onTriggered: menuBar.editorWindow.exportImage(false) }
+		Action { text: menuBar.labels.grayscaleImage; onTriggered: menuBar.editorWindow.exportImage(true) }
+	}
+	Menu {
+		title: menuBar.labels.edit
 		Action {
-			text: "撤销"
+			text: menuBar.labels.undo
 			shortcut: StandardKey.Undo
 			enabled: menuBar.projectController.canUndo && menuBar.interactionEnabled
 			onTriggered: menuBar.editorWindow.navigateHistory(false)
 		}
 		Action {
-			text: "重做"
+			text: menuBar.labels.redo
 			shortcut: StandardKey.Redo
 			enabled: menuBar.projectController.canRedo && menuBar.interactionEnabled
 			onTriggered: menuBar.editorWindow.navigateHistory(true)

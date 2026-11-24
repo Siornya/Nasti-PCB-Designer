@@ -1,26 +1,17 @@
 #include "Controller.hpp"
-#include <QCoreApplication>
-#include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
-#include <QImageReader>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QMutexLocker>
 #include <QPainter>
 #include <QProcess>
-#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
-#include <QDir>
-#include <stdexcept>
-#include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <vector>
+#include <stdexcept>
+#include <utility>
 
 QImage ImageStore::requestImage(const QString& id, QSize* size, const QSize& requested) {
 	QMutexLocker lock(&mutex);
@@ -37,83 +28,13 @@ void ImageStore::clear() {
 	QMutexLocker lock(&mutex);
 	images.clear();
 }
-static QImage display(const cv::Mat& binary) {
-	return QImage(binary.data, binary.cols, binary.rows, int(binary.step), QImage::Format_Grayscale8).copy();
-}
-static QImage renderOutline(const cv::Mat& edges) {
-	return edges.empty() ? QImage() : display(255 - edges);
-}
+
 static QString layerTypeName(const QString& type) {
 	if (type == QStringLiteral("outline")) return QStringLiteral("描边");
 	return type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印");
 }
-static QString simplificationSummary(const binarizer::EdgeSimplificationStats& stats) {
-	using Status = binarizer::EdgeSimplificationStatus;
-	switch (stats.status) {
-	case Status::Applied: {
-		const int reduced = stats.originalRectangles - stats.resultRectangles;
-		const int percent = stats.originalRectangles > 0
-			? qRound(reduced * 100.0 / stats.originalRectangles) : 0;
-		return QStringLiteral("轮廓简化已应用：预计导出矩形 %1 → %2（减少 %3%）")
-			.arg(stats.originalRectangles).arg(stats.resultRectangles).arg(percent);
-	}
-	case Status::Unchanged:
-		return QStringLiteral("轮廓简化未改变结果：当前轮廓已较规整，或容差仍然较小");
-	case Status::PrimitiveCountIncreased:
-		return QStringLiteral("已保留原轮廓：候选结果会增加导出矩形（%1 → %2）")
-			.arg(stats.originalRectangles).arg(stats.candidateRectangles);
-	case Status::TopologyChanged:
-		return QStringLiteral("已保留原轮廓：候选结果会改变连通结构或闭环");
-	case Status::DeviationExceeded:
-		return QStringLiteral("已保留原轮廓：候选结果超出允许偏移");
-	case Status::NotRequested: return {};
-	}
-	return {};
-}
-static QImage renderSilk(const QImage& original, const cv::Mat& edges,
-	const binarizer::Options& options) {
-	if (edges.empty() && !options.flipHorizontal && !options.flipVertical) return {};
-	QImage result = original.convertToFormat(QImage::Format_ARGB32);
-	if (options.flipHorizontal || options.flipVertical)
-		result = result.mirrored(options.flipHorizontal, options.flipVertical);
-	if (edges.empty()) return result;
-	if (edges.type() != CV_8UC1 || edges.cols != result.width() || edges.rows != result.height())
-		throw std::invalid_argument("Silkscreen image and edge mask dimensions differ");
-	for (int y = 0; y < result.height(); ++y) {
-		QRgb* outputLine = reinterpret_cast<QRgb*>(result.scanLine(y));
-		const auto* edgeLine = edges.ptr<unsigned char>(y);
-		for (int x = 0; x < result.width(); ++x) {
-			if (!edgeLine[x]) continue;
-			const QRgb base = outputLine[x];
-			outputLine[x] = qAlpha(base) < 128 || qGray(base) > 127
-				? qRgb(0, 0, 0) : qRgb(255, 255, 255);
-		}
-	}
-	return result;
-}
-struct Comparison {
-	cv::Mat source;
-	QImage original;
-	QImage silk;
-	QImage outline;
-	QString simplification;
-	int dotsPerMeterX = 0;
-	int dotsPerMeterY = 0;
-	bool hasPhysicalResolution = false;
-	std::vector<QImage> previews;
-	std::vector<QString> errors;
-	std::vector<double> thresholds;
-	QString error;
-};
-struct Applied {
-	QImage image;
-	QImage silk;
-	QImage outline;
-	QString simplification;
-	QString error;
-};
 
-static QColor solderMaskPreviewColor(const QString& color) {
+QColor Controller::solderMaskPreviewColor(const QString& color) {
 	if (color == QStringLiteral("red")) return QColor(QStringLiteral("#78242b"));
 	if (color == QStringLiteral("yellow")) return QColor(QStringLiteral("#b58b22"));
 	if (color == QStringLiteral("blue")) return QColor(QStringLiteral("#164d73"));
@@ -122,9 +43,6 @@ static QColor solderMaskPreviewColor(const QString& color) {
 	return QColor(QStringLiteral("#264f3a"));
 }
 
-static QString solderMaskExportColor(const QString& color) {
-	return solderMaskPreviewColor(color).name(QColor::HexRgb).toUpper();
-}
 Controller::Controller(ImageStore* images, QObject* parent) : QObject(parent), images(images) {}
 Controller::~Controller() {
 	if (cancelled) cancelled->store(true);
@@ -193,13 +111,91 @@ void Controller::invalidate() {
 	message = QStringLiteral("设置已更新，请点击 Try All 重新比较");
 	emit changed();
 }
-QString Controller::localPath(const QUrl& url) const { return url.toLocalFile(); }
-QUrl Controller::fileUrl(const QString& path) const { return QUrl::fromLocalFile(path); }
-QString Controller::sourceDirectory(const QUrl& source) const { return QFileInfo(source.toLocalFile()).absolutePath(); }
 QString Controller::selectedSourceUrl() const {
 	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
 	return QUrl::fromLocalFile(artworkLayers[selectedLayer].sourcePath).toString();
 }
+
+QVariantMap Controller::selectedParameters() const {
+	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
+	return parametersFor(artworkLayers[selectedLayer].settings);
+}
+
+int Controller::canvasWidth() const { return canvasSize().width(); }
+int Controller::canvasHeight() const { return canvasSize().height(); }
+
+QImage Controller::grayscaleImage(const cv::Mat& gray) {
+	return QImage(gray.data, gray.cols, gray.rows, int(gray.step), QImage::Format_Grayscale8).copy();
+}
+
+QImage Controller::renderOutline(const cv::Mat& edges) {
+	return edges.empty() ? QImage() : grayscaleImage(255 - edges);
+}
+
+static QString simplificationSummary(const binarizer::EdgeSimplificationStats& stats) {
+	using Status = binarizer::EdgeSimplificationStatus;
+	switch (stats.status) {
+	case Status::Applied: {
+		const int reduced = stats.originalRectangles - stats.resultRectangles;
+		const int percent = stats.originalRectangles > 0
+			? qRound(reduced * 100.0 / stats.originalRectangles) : 0;
+		return QStringLiteral("轮廓简化已应用：预计导出矩形 %1 → %2（减少 %3%）")
+			.arg(stats.originalRectangles).arg(stats.resultRectangles).arg(percent);
+	}
+	case Status::Unchanged:
+		return QStringLiteral("轮廓简化未改变结果：当前轮廓已较规整，或容差仍然较小");
+	case Status::PrimitiveCountIncreased:
+		return QStringLiteral("已保留原轮廓：候选结果会增加导出矩形（%1 → %2）")
+			.arg(stats.originalRectangles).arg(stats.candidateRectangles);
+	case Status::TopologyChanged:
+		return QStringLiteral("已保留原轮廓：候选结果会改变连通结构或闭环");
+	case Status::DeviationExceeded:
+		return QStringLiteral("已保留原轮廓：候选结果超出允许偏移");
+	case Status::NotRequested: return {};
+	}
+	return {};
+}
+static QImage renderSilk(const QImage& original, const cv::Mat& edges,
+	const binarizer::Options& options) {
+	if (edges.empty() && !options.flipHorizontal && !options.flipVertical) return {};
+	QImage result = original.convertToFormat(QImage::Format_ARGB32);
+	if (options.flipHorizontal || options.flipVertical)
+		result = result.mirrored(options.flipHorizontal, options.flipVertical);
+	if (edges.empty()) return result;
+	if (edges.type() != CV_8UC1 || edges.cols != result.width() || edges.rows != result.height())
+		throw std::invalid_argument("Silkscreen image and edge mask dimensions differ");
+	for (int y = 0; y < result.height(); ++y) {
+		QRgb* outputLine = reinterpret_cast<QRgb*>(result.scanLine(y));
+		const auto* edgeLine = edges.ptr<unsigned char>(y);
+		for (int x = 0; x < result.width(); ++x) {
+			if (!edgeLine[x]) continue;
+			const QRgb base = outputLine[x];
+			outputLine[x] = qAlpha(base) < 128 || qGray(base) > 127
+				? qRgb(0, 0, 0) : qRgb(255, 255, 255);
+		}
+	}
+	return result;
+}
+struct Comparison {
+	cv::Mat source;
+	QImage original;
+	QImage silk;
+	QImage outline;
+	QString simplification;
+	bool hasPhysicalResolution = false;
+	std::vector<QImage> previews;
+	std::vector<QString> errors;
+	std::vector<double> thresholds;
+	QString error;
+};
+struct Applied {
+	QImage image;
+	QImage silk;
+	QImage outline;
+	QString simplification;
+	QString error;
+};
+
 QVariantMap Controller::parametersFor(const binarizer::Options& options) {
 	return {
 		{"method", int(options.method)}, {"threshold", options.threshold},
@@ -218,22 +214,7 @@ QVariantMap Controller::parametersFor(const binarizer::Options& options) {
 		{"flipHorizontal", options.flipHorizontal}, {"flipVertical", options.flipVertical}
 	};
 }
-QVariantMap Controller::selectedParameters() const {
-	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) return {};
-	return parametersFor(artworkLayers[selectedLayer].settings);
-}
-bool Controller::hasExportableLayers() const {
-	return std::any_of(artworkLayers.cbegin(), artworkLayers.cend(), [this](const ArtworkLayer& layer) {
-		return layer.visible && !artworkImage(layer).isNull();
-	});
-}
-int Controller::canvasWidth() const { return canvasSize().width(); }
-int Controller::canvasHeight() const { return canvasSize().height(); }
-QUrl Controller::outputFile(const QUrl& source, const QString& directory) const {
-	const QFileInfo file(source.toLocalFile());
-	return QUrl::fromLocalFile(QDir(directory.isEmpty() ? file.absolutePath() : directory)
-		.filePath(file.completeBaseName() + ".binary.png"));
-}
+
 void Controller::compare(const QUrl& url, const QVariantMap& p) { run(url, p, -1); }
 void Controller::preview(const QUrl& url, const QVariantMap& p, int method) {
 	if (method < 0 || method >= int(binarizer::methods.size())) return;
@@ -330,7 +311,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod, bo
 			}
 			auto& layer = artworkLayers[targetIndex];
 			const bool sourceChanged = layer.originalImage != batch.original
-				|| layer.dotsPerMeterX != batch.dotsPerMeterX || layer.dotsPerMeterY != batch.dotsPerMeterY;
+				|| layer.dotsPerMeterX != batch.original.dotsPerMeterX() || layer.dotsPerMeterY != batch.original.dotsPerMeterY();
 			if (!createLayer && recordPreview && (sourceChanged || (singleMethod >= 0
 				&& (layer.settings != requestedSettings || layer.outputImage.isNull())))) recordEdit();
 			if (sourceChanged) {
@@ -345,8 +326,8 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod, bo
 				layer.outlineImage = batch.outline;
 			}
 			if (singleMethod >= 0 || createLayer) layer.settings = requestedSettings;
-			layer.dotsPerMeterX = batch.dotsPerMeterX;
-			layer.dotsPerMeterY = batch.dotsPerMeterY;
+			layer.dotsPerMeterX = batch.original.dotsPerMeterX();
+			layer.dotsPerMeterY = batch.original.dotsPerMeterY();
 			layer.hasPhysicalResolution = batch.hasPhysicalResolution;
 			if (createLayer) {
 				const QSize size = layerSize(layer);
@@ -404,23 +385,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod, bo
 	watcher->setFuture(QtConcurrent::run([path = url.toLocalFile(), embedded, options, stop, singleMethod, outlineOnly] {
 		Comparison batch;
 		try {
-			QImageReader reader(path);
-			QImage image = embedded.isNull() ? reader.read() : embedded;
-			if (image.isNull()) throw std::runtime_error(reader.errorString().toStdString());
-			batch.dotsPerMeterX = image.dotsPerMeterX();
-			batch.dotsPerMeterY = image.dotsPerMeterY();
-			const QImage defaultResolution(1, 1, QImage::Format_Grayscale8);
-			const double dpiX = batch.dotsPerMeterX * 0.0254;
-			const double dpiY = batch.dotsPerMeterY * 0.0254;
-			const bool isQtDefault = batch.dotsPerMeterX == defaultResolution.dotsPerMeterX()
-				&& batch.dotsPerMeterY == defaultResolution.dotsPerMeterY();
-			batch.hasPhysicalResolution = !isQtDefault
-				&& dpiX >= 10.0 && dpiX <= 2400.0
-				&& dpiY >= 10.0 && dpiY <= 2400.0;
-			image = image.convertToFormat(QImage::Format_RGBA8888);
-			const cv::Mat rgba(image.height(), image.width(), CV_8UC4, image.bits(), image.bytesPerLine());
-			cv::cvtColor(rgba, batch.source, cv::COLOR_RGBA2BGRA);
-			batch.original = image;
+			batch.original = readImage(path, embedded, batch.source, batch.hasPhysicalResolution);
 			if (stop->load()) return batch;
 			const auto gray = binarizer::preprocess(batch.source, options);
 			auto edgeOptions = options;
@@ -439,7 +404,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod, bo
 				double thresholdValue = std::numeric_limits<double>::quiet_NaN();
 				try {
 					batch.previews.push_back(outlineOnly && singleMethod < 0 ? renderOutline(edges)
-						: display(binarizer::overlayEdges(binarizer::threshold(gray, candidate, &thresholdValue), overlay)));
+						: grayscaleImage(binarizer::overlayEdges(binarizer::threshold(gray, candidate, &thresholdValue), overlay)));
 					batch.errors.emplace_back();
 				} catch (const std::exception& error) {
 					batch.previews.emplace_back();
@@ -510,7 +475,7 @@ void Controller::apply(int index) {
 					? binarizer::edgeMask(gray, source, edgeOptions, &simplificationStats) : cv::Mat();
 				applied.simplification = simplificationSummary(simplificationStats);
 				const cv::Mat overlay = options.extractEdges ? edges : cv::Mat();
-				applied.image = display(binarizer::overlayEdges(binarizer::threshold(gray, options), overlay));
+				applied.image = grayscaleImage(binarizer::overlayEdges(binarizer::threshold(gray, options), overlay));
 				applied.silk = renderSilk(originalImage, overlay, options);
 				applied.outline = renderOutline(edges);
 			}
@@ -800,180 +765,4 @@ void Controller::cancel() {
 		message = QStringLiteral("正在结束当前计算…");
 		emit changed();
 	}
-}
-void Controller::save(const QUrl& destination) {
-	if (active || output.isNull()) return;
-	if (!destination.isLocalFile()) return;
-	QString path = destination.toLocalFile();
-	if (!path.endsWith(".png", Qt::CaseInsensitive)) path += ".png";
-	message = output.save(path, "PNG") ? QStringLiteral("已保存：%1").arg(path) : QStringLiteral("保存失败，请检查路径和权限");
-	emit changed();
-}
-void Controller::generatePcb(const QUrl& source, const QString& directory) {
-	if (active) return;
-	if (!hasExportableLayers()) {
-		message = QStringLiteral("没有可用于生成 PCB 文件的可见图层");
-		emit changed();
-		return;
-	}
-	QString projectSource = source.toLocalFile();
-	if (!QFileInfo::exists(projectSource) && !artworkLayers.empty())
-		projectSource = artworkLayers.front().sourcePath;
-	const QFileInfo sourceFile(projectSource);
-	QString root = QStringLiteral(BINARIZER_SOURCE_DIR);
-	QString exporter;
-	const QDir applicationDirectory(QCoreApplication::applicationDirPath());
-#ifdef Q_OS_WIN
-	const QString exporterName = QStringLiteral("pcb-exporter.exe");
-#else
-	const QString exporterName = QStringLiteral("pcb-exporter");
-#endif
-	const QStringList exporterDirectories{
-		QStringLiteral("../exporter"), QStringLiteral("../Resources/exporter")};
-	for (const QString& directory : exporterDirectories) {
-		const QString candidate = applicationDirectory.filePath(directory + QLatin1Char('/') + exporterName);
-		if (!QFileInfo(candidate).isExecutable()) continue;
-		exporter = QDir::cleanPath(candidate);
-		root = QFileInfo(exporter).absolutePath();
-		break;
-	}
-	const QString script = QDir(root).filePath(QStringLiteral("img2pcb.py"));
-	if (exporter.isEmpty() && !QFileInfo::exists(script)) {
-		message = QStringLiteral("找不到 Python PCB 导出器：%1").arg(script);
-		emit changed();
-		return;
-	}
-	QString python = qEnvironmentVariable("IMAGE_BINARIZER_PYTHON");
-	if (exporter.isEmpty() && python.isEmpty()) {
-		const QString unixEnvironment = QDir(root).filePath(QStringLiteral(".venv/bin/python"));
-		const QString windowsEnvironment = QDir(root).filePath(QStringLiteral(".venv/Scripts/python.exe"));
-		if (QFileInfo(unixEnvironment).isExecutable()) python = unixEnvironment;
-		else if (QFileInfo(windowsEnvironment).isExecutable()) python = windowsEnvironment;
-		else python = QStandardPaths::findExecutable(QStringLiteral("python3"));
-		if (python.isEmpty()) python = QStandardPaths::findExecutable(QStringLiteral("python"));
-	}
-	if (exporter.isEmpty() && (python.isEmpty() || !QFileInfo(python).isExecutable())) {
-		message = QStringLiteral("找不到可用的 Python 运行环境");
-		emit changed();
-		return;
-	}
-	QDir outputDirectory(directory.isEmpty() ? sourceFile.absolutePath() : directory);
-	if (!outputDirectory.exists() && !QDir().mkpath(outputDirectory.absolutePath())) {
-		message = QStringLiteral("无法创建输出目录：%1").arg(outputDirectory.absolutePath());
-		emit changed();
-		return;
-	}
-	pcbTemporaryDirectory = std::make_unique<QTemporaryDir>(
-		QDir::temp().filePath(QStringLiteral("image-binarizer-pcb-XXXXXX")));
-	if (!pcbTemporaryDirectory->isValid()) {
-		message = QStringLiteral("无法创建 PCB 导出临时目录");
-		pcbTemporaryDirectory.reset();
-		emit changed();
-		return;
-	}
-	pcbDestination = outputDirectory.filePath(sourceFile.completeBaseName() + QStringLiteral(".epro2"));
-	pcbCancelled = false;
-	const QSize canvas = canvasSize();
-	QJsonArray exportedLayers;
-	for (int index = 0; index < int(artworkLayers.size()); ++index) {
-		const auto& layer = artworkLayers[index];
-		if (!layer.visible) continue;
-		const QImage& image = artworkImage(layer);
-		if (image.isNull()) continue;
-		const QString path = QDir(pcbTemporaryDirectory->path())
-			.filePath(QStringLiteral("layer-%1.png").arg(index));
-		if (!image.save(path, "PNG")) {
-			message = QStringLiteral("无法写入 PCB 导出临时图层");
-			pcbTemporaryDirectory.reset();
-			emit changed();
-			return;
-		}
-		exportedLayers.append(QJsonObject{{QStringLiteral("source"), path},
-			{QStringLiteral("type"), layer.type == QStringLiteral("outline") ? QStringLiteral("enig") : layer.type},
-			{QStringLiteral("x"), layer.x},
-			{QStringLiteral("y"), layer.y}, {QStringLiteral("side"), layer.side}});
-	}
-	const ArtworkLayer* resolutionLayer = nullptr;
-	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())
-		&& artworkLayers[selectedLayer].visible && artworkLayers[selectedLayer].hasPhysicalResolution)
-		resolutionLayer = &artworkLayers[selectedLayer];
-	if (!resolutionLayer) {
-		for (const auto& layer : artworkLayers)
-			if (layer.visible && !artworkImage(layer).isNull() && layer.hasPhysicalResolution) {
-				resolutionLayer = &layer;
-				break;
-			}
-	}
-	QJsonObject canvasSettings{{QStringLiteral("width"), canvas.width()},
-		{QStringLiteral("height"), canvas.height()}};
-	double widthMm;
-	double heightMm;
-	if (resolutionLayer) {
-		widthMm = canvas.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
-		heightMm = canvas.height() * 1000.0 / resolutionLayer->dotsPerMeterY;
-		pcbDimensionMessage = QStringLiteral("按图片 DPI：图案 %1 × %2 mm，板框 %3 × %4 mm")
-			.arg(widthMm, 0, 'f', 2).arg(heightMm, 0, 'f', 2)
-			.arg(widthMm + 2.0, 0, 'f', 2).arg(heightMm + 2.0, 0, 'f', 2);
-	} else {
-		constexpr double defaultDpi = 300.0;
-		widthMm = canvas.width() * 25.4 / defaultDpi;
-		heightMm = canvas.height() * 25.4 / defaultDpi;
-		pcbDimensionMessage = QStringLiteral("未检测到可靠 DPI，按默认 300 DPI：图案 %1 × %2 mm，板框 %3 × %4 mm")
-			.arg(widthMm, 0, 'f', 2).arg(heightMm, 0, 'f', 2)
-			.arg(widthMm + 2.0, 0, 'f', 2).arg(heightMm + 2.0, 0, 'f', 2);
-	}
-	canvasSettings.insert(QStringLiteral("widthMm"), widthMm);
-	canvasSettings.insert(QStringLiteral("heightMm"), heightMm);
-	const QJsonObject manifestObject{
-		{QStringLiteral("canvas"), canvasSettings},
-		{QStringLiteral("projectName"), sourceFile.completeBaseName()},
-		{QStringLiteral("solderMaskColor"), solderMaskExportColor(maskColor)},
-		{QStringLiteral("layers"), exportedLayers}
-	};
-	const QString manifestPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("layers.json"));
-	QFile manifest(manifestPath);
-	if (!manifest.open(QIODevice::WriteOnly)
-		|| manifest.write(QJsonDocument(manifestObject).toJson(QJsonDocument::Compact)) < 0) {
-		message = QStringLiteral("无法写入 PCB 导出图层清单");
-		pcbTemporaryDirectory.reset();
-		emit changed();
-		return;
-	}
-	manifest.close();
-	QStringList arguments{QStringLiteral("--manifest"), manifestPath,
-		QStringLiteral("-o"), pcbDestination};
-	if (exporter.isEmpty()) arguments.prepend(script);
-	auto* process = new QProcess(this);
-	pcbProcess = process;
-	process->setProgram(exporter.isEmpty() ? python : exporter);
-	process->setArguments(arguments);
-	process->setWorkingDirectory(root);
-	connect(process, &QProcess::finished, this,
-		[this, process](int exitCode, QProcess::ExitStatus status) {
-			finishPcb(process, exitCode, status != QProcess::NormalExit);
-		});
-	connect(process, &QProcess::errorOccurred, this,
-		[this, process](QProcess::ProcessError error) {
-			if (error == QProcess::FailedToStart) finishPcb(process, -1, true);
-		});
-	active = true;
-	message = QStringLiteral("正在生成 PCB 文件…（%1）").arg(pcbDimensionMessage);
-	process->start();
-	emit changed();
-}
-void Controller::finishPcb(QProcess* process, int exitCode, bool processFailed) {
-	if (!pcbProcess || pcbProcess != process) return;
-	const QString error = QString::fromUtf8(process->readAllStandardError()).trimmed();
-	active = false;
-	if (pcbCancelled) message = QStringLiteral("已取消 PCB 文件生成");
-	else if (processFailed || exitCode != 0 || !QFileInfo::exists(pcbDestination))
-		message = error.isEmpty() ? QStringLiteral("PCB 文件生成失败") : error;
-	else message = QStringLiteral("已生成 PCB 文件：%1（%2）").arg(pcbDestination, pcbDimensionMessage);
-	pcbProcess.clear();
-	process->deleteLater();
-	pcbTemporaryDirectory.reset();
-	pcbDestination.clear();
-	pcbDimensionMessage.clear();
-	pcbCancelled = false;
-	emit changed();
 }

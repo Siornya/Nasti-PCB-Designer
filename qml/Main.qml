@@ -70,6 +70,11 @@ ApplicationWindow {
 		showingOriginal = false
 		selectingLayer = false
 	}
+	function exportImage(grayscale) {
+		saveDialog.grayscale = grayscale
+		saveDialog.selectedFile = controller.outputFile(sourceFile, outputPath.text, grayscale)
+		saveDialog.open()
+	}
 	function parameters() {
 		return { method: method.currentIndex, threshold: threshold.value, blockSize: block.value,
 			adaptiveC: adaptiveC.value, localK: localK.value / 100,
@@ -372,11 +377,12 @@ ApplicationWindow {
 	}
 	FileDialog {
 		id: saveDialog
-		title: "保存黑白图片"
+		property bool grayscale: false
+		title: grayscale ? "保存灰度图片" : "保存黑白图片"
 		fileMode: FileDialog.SaveFile
 		nameFilters: ["PNG 图片 (*.png)"]
 		defaultSuffix: "png"
-		onAccepted: controller.save(selectedFile)
+		onAccepted: controller.save(selectedFile, grayscale)
 	}
 	Dialog {
 		id: advanced
@@ -943,7 +949,7 @@ ApplicationWindow {
 			AppButton {
 				text: "保存黑白图片"
 				enabled: !controller.busy && !window.pendingPreview && controller.resultUrl.length > 0
-				onClicked: { saveDialog.selectedFile = controller.outputFile(window.sourceFile, outputPath.text); saveDialog.open() }
+				onClicked: window.exportImage(false)
 			}
 			AppButton {
 				text: "生成PCB文件"

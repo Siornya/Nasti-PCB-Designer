@@ -70,7 +70,7 @@ public:
 	Q_INVOKABLE void preview(const QUrl& source, const QVariantMap& parameters, int method);
 	Q_INVOKABLE QString localPath(const QUrl& url) const;
 	Q_INVOKABLE QUrl fileUrl(const QString& path) const;
-	Q_INVOKABLE QUrl outputFile(const QUrl& source, const QString& directory) const;
+	Q_INVOKABLE QUrl outputFile(const QUrl& source, const QString& directory, bool grayscale = false) const;
 	Q_INVOKABLE QString sourceDirectory(const QUrl& source) const;
 	Q_INVOKABLE void selectLayer(int index);
 	Q_INVOKABLE void setLayerType(int index, const QString& type);
@@ -84,13 +84,17 @@ public:
 	Q_INVOKABLE void apply(int index);
 	Q_INVOKABLE void cancel();
 	Q_INVOKABLE void invalidate();
-	Q_INVOKABLE void save(const QUrl& destination);
+	Q_INVOKABLE void save(const QUrl& destination, bool grayscale = false);
 	Q_INVOKABLE bool saveProject(const QUrl& destination);
 	Q_INVOKABLE bool openProject(const QUrl& source);
 	Q_INVOKABLE void generatePcb(const QUrl& source, const QString& directory);
 signals:
 	void changed();
 private:
+	static QImage readImage(const QString& path, const QImage& embedded, cv::Mat& source, bool& hasPhysicalResolution);
+	static QImage grayscaleImage(const cv::Mat& gray);
+	static QImage renderOutline(const cv::Mat& edges);
+	static QColor solderMaskPreviewColor(const QString& color);
 	static QVariantMap parametersFor(const binarizer::Options& options);
 	static binarizer::Options optionsFrom(const QVariantMap& parameters, int methodIndex);
 	struct ArtworkLayer {
