@@ -18,6 +18,7 @@ MenuBar {
 			exportMenu: "导出",
 			binaryImage: "黑白图片…",
 			grayscaleImage: "灰度图片…",
+			lithophane: "透光浮雕（STL）…",
 			edit: "编辑",
 			undo: "撤销",
 			redo: "重做"
@@ -30,6 +31,7 @@ MenuBar {
 			exportMenu: "Export",
 			binaryImage: "Black and White Image…",
 			grayscaleImage: "Grayscale Image…",
+			lithophane: "Lithophane (STL)…",
 			edit: "Edit",
 			undo: "Undo",
 			redo: "Redo"
@@ -42,6 +44,7 @@ MenuBar {
 			exportMenu: "エクスポート",
 			binaryImage: "白黒画像…",
 			grayscaleImage: "グレースケール画像…",
+			lithophane: "リトファン（STL）…",
 			edit: "編集",
 			undo: "元に戻す",
 			redo: "やり直す"
@@ -75,6 +78,7 @@ MenuBar {
 		enabled: menuBar.interactionEnabled && !menuBar.projectController.busy
 			&& menuBar.projectController.resultUrl.length > 0
 		Action { text: menuBar.labels.binaryImage; onTriggered: menuBar.editorWindow.exportImage(false) }
+		Action { text: menuBar.labels.lithophane; onTriggered: menuBar.editorWindow.openLithophane() }
 		Action { text: menuBar.labels.grayscaleImage; onTriggered: menuBar.editorWindow.exportImage(true) }
 	}
 	Menu {

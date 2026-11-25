@@ -70,6 +70,13 @@ ApplicationWindow {
 		showingOriginal = false
 		selectingLayer = false
 	}
+	function openLithophane() {
+		if (!currentLayer) return
+		reliefWidth.text = String(currentLayer.reliefWidth)
+		reliefThin.text = String(currentLayer.reliefThin)
+		reliefThick.text = String(currentLayer.reliefThick)
+		reliefDialog.open()
+	}
 	function exportImage(grayscale) {
 		saveDialog.grayscale = grayscale
 		saveDialog.selectedFile = controller.outputFile(sourceFile, outputPath.text, grayscale)
@@ -383,6 +390,43 @@ ApplicationWindow {
 		nameFilters: ["PNG 图片 (*.png)"]
 		defaultSuffix: "png"
 		onAccepted: controller.save(selectedFile, grayscale)
+	}
+	FileDialog {
+		id: reliefFile
+		title: "保存透光浮雕"
+		fileMode: FileDialog.SaveFile
+		nameFilters: ["二进制 STL (*.stl)"]
+		defaultSuffix: "stl"
+		onAccepted: controller.exportLithophane(selectedFile, Number(reliefWidth.text),
+			Number(reliefThin.text), Number(reliefThick.text))
+	}
+	Dialog {
+		id: reliefDialog
+		title: "导出透光浮雕"
+		anchors.centerIn: parent
+		modal: true
+		standardButtons: Dialog.Ok | Dialog.Cancel
+		readonly property bool valid: reliefWidth.acceptableInput && reliefThin.acceptableInput
+			&& reliefThick.acceptableInput && Number(reliefThick.text) > Number(reliefThin.text)
+		onOpened: standardButton(Dialog.Ok).enabled = Qt.binding(() => reliefDialog.valid)
+		onAccepted: {
+			const suggested = controller.outputFile(window.sourceFile, outputPath.text, false)
+			reliefFile.selectedFile = suggested.toString().replace(/\.binary\.png$/, ".stl")
+			reliefFile.open()
+		}
+		GridLayout {
+			columns: 2
+			Label { text: "成品宽度（mm）" }
+			TextField { id: reliefWidth; validator: DoubleValidator { locale: "C"; bottom: 0.1; top: 10000; decimals: 2; notation: DoubleValidator.StandardNotation } }
+			Label { text: "等比高度（mm）" }
+			Label { text: window.currentLayer && reliefWidth.acceptableInput
+				? (Number(reliefWidth.text) * window.currentLayer.height / window.currentLayer.width).toFixed(2) : "—" }
+			Label { text: "最薄处 · 白（mm）" }
+			TextField { id: reliefThin; validator: DoubleValidator { locale: "C"; bottom: 0.1; top: 1000; decimals: 2; notation: DoubleValidator.StandardNotation } }
+			Label { text: "最厚处 · 黑（mm）" }
+			TextField { id: reliefThick; validator: DoubleValidator { locale: "C"; bottom: 0.1; top: 1000; decimals: 2; notation: DoubleValidator.StandardNotation } }
+			Label { Layout.columnSpan: 2; visible: Number(reliefThick.text) <= Number(reliefThin.text); text: "最厚处须大于最薄处" }
+		}
 	}
 	Dialog {
 		id: advanced

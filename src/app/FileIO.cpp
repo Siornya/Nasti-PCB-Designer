@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -62,6 +64,16 @@ QUrl Controller::outputFile(const QUrl& source, const QString& directory, bool g
 		.filePath(file.completeBaseName() + (grayscale ? ".gray.png" : ".binary.png")));
 }
 
+static cv::Mat adjustedGray(const cv::Mat& source, const binarizer::Options& settings) {
+	cv::Mat gray = binarizer::preprocess(source, settings);
+	if (settings.invert) cv::bitwise_not(gray, gray);
+	if (settings.flipHorizontal || settings.flipVertical) {
+		const int axis = settings.flipHorizontal && settings.flipVertical ? -1 : int(settings.flipHorizontal);
+		cv::flip(gray, gray, axis);
+	}
+	return gray;
+}
+
 void Controller::save(const QUrl& destination, bool grayscale) {
 	if (active || output.isNull()) return;
 	if (!destination.isLocalFile()) return;
@@ -70,10 +82,7 @@ void Controller::save(const QUrl& destination, bool grayscale) {
 	QImage image = output;
 	if (grayscale) {
 		try {
-			image = grayscaleImage(binarizer::preprocess(sourceImage, settings));
-			if (settings.invert) image.invertPixels();
-			if (settings.flipHorizontal || settings.flipVertical)
-				image = image.mirrored(settings.flipHorizontal, settings.flipVertical);
+			image = grayscaleImage(adjustedGray(sourceImage, settings));
 			const auto& layer = artworkLayers[selectedLayer];
 			image.setDotsPerMeterX(layer.dotsPerMeterX);
 			image.setDotsPerMeterY(layer.dotsPerMeterY);
@@ -86,6 +95,103 @@ void Controller::save(const QUrl& destination, bool grayscale) {
 	message = image.save(path, "PNG") ? QStringLiteral("已保存：%1").arg(path) : QStringLiteral("保存失败，请检查路径和权限");
 	emit changed();
 }
+static bool validRelief(double width, double thin, double thick) {
+	return width >= 0.1 && width <= 10000 && thin >= 0.1 && thin < thick && thick <= 1000;
+}
+
+static QString writeLithophane(const QString& path, cv::Mat gray, double width, double thin,
+	double thick, const std::atomic_bool& stop) {
+	const double height = width * gray.rows / gray.cols;
+	// Bound binary STL size below 100 MB, independent of the source resolution.
+	const double scale = std::min(1.0, 900.0 / std::max(gray.rows, gray.cols));
+	const int cols = std::max(2, qRound(gray.cols * scale));
+	const int rows = std::max(2, qRound(gray.rows * scale));
+	cv::resize(gray, gray, {cols, rows}, 0, 0, cv::INTER_AREA);
+	QSaveFile file(path);
+	if (!file.open(QIODevice::WriteOnly)) return file.errorString();
+	QDataStream out(&file);
+	out.setByteOrder(QDataStream::LittleEndian);
+	out.setFloatingPointPrecision(QDataStream::SinglePrecision);
+	const QByteArray header(80, '\0');
+	out.writeRawData(header.constData(), header.size());
+	const int perimeter = 2 * (rows + cols - 2);
+	out << quint32(2 * (cols - 1) * (rows - 1) + 3 * perimeter);
+	using Vertex = cv::Vec3f;
+	auto vertex = [&](int x, int y) {
+		const int intensity = gray.at<uchar>(rows - 1 - y, x);
+		return Vertex(width * x / (cols - 1), height * y / (rows - 1),
+			thin + (thick - thin) * (255 - intensity) / 255);
+	};
+	auto triangle = [&](const Vertex& a, const Vertex& b, const Vertex& c) {
+		const Vertex normal = cv::normalize((b - a).cross(c - a));
+		for (const Vertex* v : {&normal, &a, &b, &c}) out << (*v)[0] << (*v)[1] << (*v)[2];
+		out << quint16(0);
+	};
+	const Vertex center(width / 2, height / 2, 0);
+	auto closeEdge = [&](const Vertex& a, const Vertex& b) {
+		const Vertex baseA(a[0], a[1], 0), baseB(b[0], b[1], 0);
+		triangle(baseA, baseB, b);
+		triangle(baseA, b, a);
+		triangle(center, baseB, baseA);
+	};
+	for (int y = 0; y < rows - 1; ++y) {
+		if (stop.load()) return QStringLiteral("已取消");
+		for (int x = 0; x < cols - 1; ++x) {
+			const Vertex a = vertex(x, y), b = vertex(x + 1, y);
+			const Vertex c = vertex(x + 1, y + 1), d = vertex(x, y + 1);
+			triangle(a, b, c);
+			triangle(a, c, d);
+			if (y == 0) closeEdge(a, b);
+			if (x == cols - 2) closeEdge(b, c);
+			if (y == rows - 2) closeEdge(c, d);
+			if (x == 0) closeEdge(d, a);
+		}
+		if (out.status() != QDataStream::Ok) return file.errorString();
+	}
+	if (stop.load()) return QStringLiteral("已取消");
+	if (!file.commit()) return file.errorString();
+	return {};
+}
+
+void Controller::exportLithophane(const QUrl& destination, double width, double thin, double thick) {
+	if (active || selectedLayer < 0 || !destination.isLocalFile()) return;
+	if (!validRelief(width, thin, thick)) {
+		message = QStringLiteral("请输入有效尺寸，最厚处必须大于最薄处");
+		emit changed();
+		return;
+	}
+	auto& layer = artworkLayers[selectedLayer];
+	if (layer.reliefWidth != width || layer.reliefThin != thin || layer.reliefThick != thick) {
+		recordEdit();
+		layer.reliefWidth = width;
+		layer.reliefThin = thin;
+		layer.reliefThick = thick;
+		refreshLayerPresentation();
+	}
+	QString path = destination.toLocalFile();
+	if (!path.endsWith(".stl", Qt::CaseInsensitive)) path += ".stl";
+	active = true;
+	message = QStringLiteral("正在导出透光浮雕…");
+	cancelled = std::make_shared<std::atomic_bool>(false);
+	auto* watcher = new QFutureWatcher<QString>(this);
+	connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, path] {
+		const QString error = watcher->result();
+		watcher->deleteLater();
+		active = false;
+		message = error.isEmpty() ? QStringLiteral("已导出透光浮雕：%1").arg(path) : error;
+		emit changed();
+	});
+	watcher->setFuture(QtConcurrent::run([source = layer.sourceImage, options = layer.settings,
+		stop = cancelled, path, width, thin, thick]() -> QString {
+		try {
+			return writeLithophane(path, adjustedGray(source, options), width, thin, thick, *stop);
+		} catch (const std::exception& error) {
+			return QString::fromUtf8(error.what());
+		}
+	}));
+	emit changed();
+}
+
 void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	if (active) return;
 	if (!hasExportableLayers()) {
@@ -266,8 +372,12 @@ bool Controller::saveProject(const QUrl& destination) {
 			<< maskColor << activeSideValue << frontSelectedLayerId << backSelectedLayerId
 			<< quint32(artworkLayers.size());
 		for (const auto& layer : artworkLayers) {
+			auto params = parametersFor(layer.settings);
+			params.insert("reliefWidth", layer.reliefWidth);
+			params.insert("reliefThin", layer.reliefThin);
+			params.insert("reliefThick", layer.reliefThick);
 			out << layer.id << layer.name << layer.sourcePath << layer.type << layer.side << layer.visible
-				<< layer.x << layer.y << parametersFor(layer.settings) << layer.dotsPerMeterX
+				<< layer.x << layer.y << params << layer.dotsPerMeterX
 				<< layer.dotsPerMeterY << layer.hasPhysicalResolution << layer.originalImage
 				<< layer.outputImage << layer.silkImage << layer.outlineImage;
 		}
@@ -315,6 +425,10 @@ bool Controller::openProject(const QUrl& source) {
 			return fail(QStringLiteral("图层数据无效或不完整"));
 		for (const QImage* image : {&layer.outputImage, &layer.silkImage, &layer.outlineImage})
 			if (!image->isNull() && image->size() != layer.originalImage.size()) return fail(QStringLiteral("图层尺寸不一致"));
+		layer.reliefWidth = params.value("reliefWidth", layer.reliefWidth).toDouble();
+		layer.reliefThin = params.value("reliefThin", layer.reliefThin).toDouble();
+		layer.reliefThick = params.value("reliefThick", layer.reliefThick).toDouble();
+		if (!validRelief(layer.reliefWidth, layer.reliefThin, layer.reliefThick)) return fail(QStringLiteral("浮雕尺寸无效"));
 		layer.settings = optionsFrom(params, method);
 		layer.embedded = true;
 		layer.sourceImage = sourcePixels(layer.originalImage);

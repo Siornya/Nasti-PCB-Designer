@@ -85,6 +85,7 @@ public:
 	Q_INVOKABLE void cancel();
 	Q_INVOKABLE void invalidate();
 	Q_INVOKABLE void save(const QUrl& destination, bool grayscale = false);
+	Q_INVOKABLE void exportLithophane(const QUrl& destination, double width, double thin, double thick);
 	Q_INVOKABLE bool saveProject(const QUrl& destination);
 	Q_INVOKABLE bool openProject(const QUrl& source);
 	Q_INVOKABLE void generatePcb(const QUrl& source, const QString& directory);
@@ -113,6 +114,7 @@ private:
 		QImage silkImage;
 		QImage outlineImage;
 		binarizer::Options settings;
+		double reliefWidth = 100, reliefThin = 2.5, reliefThick = 10.0;
 		int dotsPerMeterX = 0;
 		int dotsPerMeterY = 0;
 		bool hasPhysicalResolution = false;

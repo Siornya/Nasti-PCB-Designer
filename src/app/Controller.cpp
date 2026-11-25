@@ -703,6 +703,7 @@ void Controller::refreshLayerPresentation() {
 			{"leftX", layer.x}, {"topY", layer.y},
 			{"centerX", layer.x + layerSize(layer).width() / 2.0},
 			{"centerY", layer.y + layerSize(layer).height() / 2.0},
+			{"reliefWidth", layer.reliefWidth}, {"reliefThin", layer.reliefThin}, {"reliefThick", layer.reliefThick},
 			{"width", layerSize(layer).width()}, {"height", layerSize(layer).height()},
 			{"thumbnail", thumbnail}, {"source", QUrl::fromLocalFile(layer.sourcePath).toString()}
 		});

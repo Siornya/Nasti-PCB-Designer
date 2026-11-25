@@ -2,6 +2,10 @@
 #include <QGuiApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QDataStream>
+#include <array>
+#include <map>
+#include <cmath>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -13,6 +17,44 @@
 static void check(bool condition, const char* message) {
 	if (!condition) throw std::runtime_error(message);
 }
+static void checkLithophane(const QString& path) {
+	QFile file(path);
+	check(file.open(QIODevice::ReadOnly) && file.seek(80), "Missing STL");
+	QDataStream in(&file);
+	in.setByteOrder(QDataStream::LittleEndian);
+	in.setFloatingPointPrecision(QDataStream::SinglePrecision);
+	quint32 count;
+	in >> count;
+	check(count > 0 && file.size() == 84 + 50 * qint64(count), "Invalid binary STL length");
+	using Point = std::array<float, 3>;
+	std::map<std::pair<Point, Point>, std::pair<int, int>> edges;
+	float highest = 0;
+	bool whiteCorner = false;
+	for (quint32 i = 0; i < count; ++i) {
+		Point normal, vertices[3];
+		for (auto& component : normal) in >> component;
+		for (auto& point : vertices) {
+			for (auto& component : point) in >> component;
+			highest = std::max(highest, point[2]);
+			if (point == Point{80, 80, 1}) whiteCorner = true;
+		}
+		quint16 attribute;
+		in >> attribute;
+		for (int j = 0; j < 3; ++j) {
+			const auto& a = vertices[j];
+			const auto& b = vertices[(j + 1) % 3];
+			check(a != b, "Collapsed STL edge");
+			auto& edge = edges[std::minmax(a, b)];
+			++edge.first;
+			edge.second += a < b ? 1 : -1;
+		}
+	}
+	for (const auto& entry : edges)
+		check(entry.second == std::pair{2, 0}, "STL shell has an open or reversed edge");
+	check(whiteCorner && std::abs(highest - (1 + 3 * 75 / 255.0)) < 0.0001,
+		"Incorrect STL dimensions or grayscale thickness");
+}
+
 static bool hasOutline(const QImage& image, const QRect& area) {
 	const auto region = area.intersected(image.rect());
 	for (int y = region.top(); y <= region.bottom(); ++y)
@@ -113,10 +155,16 @@ int main(int argc, char** argv) {
 		const auto project = QUrl::fromLocalFile(directory.filePath("artwork.nasti"));
 		controller.setSolderMaskColor("blue");
 		controller.setLayerTopLeft(controller.selectedLayerIndex(), 8, 6);
+		const auto stl = directory.filePath("relief.stl");
+		controller.exportLithophane(QUrl::fromLocalFile(stl), 80, 1, 4);
+		wait(controller);
+		checkLithophane(stl);
 		check(controller.saveProject(project), "Cannot save editable project");
 		controller.removeLayer(controller.selectedLayerIndex());
 		check(QFile::remove(input), "Cannot remove external source");
 		check(controller.openProject(project) && controller.solderMaskColor() == "blue"
+			&& controller.layerRows().front().toMap().value("reliefWidth").toDouble() == 80
+			&& controller.layerRows().front().toMap().value("reliefThick").toDouble() == 4
 			&& controller.canvasWidth() == 72 && controller.canvasHeight() == 70
 			&& controller.layerRows().front().toMap().value("type") == "outline"
 			&& controller.selectedParameters().value("threshold").toInt() == 255
