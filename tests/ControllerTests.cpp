@@ -1,5 +1,6 @@
 #include "Controller.hpp"
 #include <QGuiApplication>
+#include <QWindow>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QDataStream>
@@ -159,10 +160,26 @@ int main(int argc, char** argv) {
 		controller.exportLithophane(QUrl::fromLocalFile(stl), 80, 1, 4);
 		wait(controller);
 		checkLithophane(stl);
-		check(controller.saveProject(project), "Cannot save editable project");
+		check(controller.modified(), "Edits must mark the project modified");
+		auto* window = qobject_cast<QWindow*>(engine.rootObjects().front());
+		check(window && !window->close(), "Closing discarded unsaved edits");
+		QGuiApplication::processEvents();
+		auto* flow = window->findChild<QObject*>("projectFlow");
+		auto* prompt = window->findChild<QObject*>("unsavedDialog");
+		check(prompt && prompt->property("visible").toBool(), "Unsaved prompt did not appear");
+		check(QMetaObject::invokeMethod(prompt, "reject") && window->isVisible() && controller.modified()
+			&& flow && !flow->property("closeRequested").toBool(), "Cancel did not preserve the document");
+		check(controller.saveProject(project) && !controller.modified(), "Cannot save editable project");
+		controller.setSolderMaskColor("green");
+		controller.undo();
+		check(!controller.modified(), "Undo to the saved state should clear the marker");
+		controller.redo();
+		check(controller.modified(), "Redo should restore the unsaved marker");
+		check(!controller.saveProject(QUrl::fromLocalFile(directory.path())) && controller.modified(),
+			"Failed save cleared the unsaved marker");
 		controller.removeLayer(controller.selectedLayerIndex());
 		check(QFile::remove(input), "Cannot remove external source");
-		check(controller.openProject(project) && controller.solderMaskColor() == "blue"
+		check(controller.openProject(project) && !controller.modified() && controller.solderMaskColor() == "blue"
 			&& controller.layerRows().front().toMap().value("reliefWidth").toDouble() == 80
 			&& controller.layerRows().front().toMap().value("reliefThick").toDouble() == 4
 			&& controller.canvasWidth() == 72 && controller.canvasHeight() == 70
@@ -181,9 +198,11 @@ int main(int argc, char** argv) {
 		wait(controller);
 		check(controller.selectedParameters().value("threshold").toInt() == 42,
 			"Cannot edit restored layer without external source");
-		controller.generatePcb(url, directory.path());
+		check(controller.suggestedPcbFile(url, directory.path()).fileName() == "input.epro2",
+			"Unexpected suggested PCB filename");
+		controller.generatePcb(QUrl::fromLocalFile(directory.filePath("custom board.epro2")));
 		wait(controller);
-		QFile pcb(directory.filePath(QStringLiteral("input.epro2")));
+		QFile pcb(directory.filePath(QStringLiteral("custom board.epro2")));
 		check(pcb.open(QIODevice::ReadOnly) && pcb.read(4) == QByteArray("PK\x03\x04", 4),
 			"PCB export did not produce a project archive");
 		std::cout << "PASS: application UI, image processing and PCB export\n";

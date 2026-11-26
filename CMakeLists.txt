@@ -48,11 +48,13 @@ if(BUILD_GUI)
 		WIN32_EXECUTABLE TRUE
 		MACOSX_BUNDLE ${BUILD_APP_PACKAGE}
 		MACOSX_BUNDLE_BUNDLE_NAME "NastiDesigner"
-		MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.nasti.pcbdesigner")
-	set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
-	set_source_files_properties(qml/AppMenuBar.qml PROPERTIES QT_RESOURCE_ALIAS AppMenuBar.qml)
-	qt_add_qml_module(nasti_designer URI Binarizer VERSION 1.0
-		QML_FILES qml/Main.qml qml/AppMenuBar.qml)
+		MACOSX_BUNDLE_GUI_IDENTIFIER "cafe.siornya.nastidesigner")
+	file(GLOB_RECURSE qml_files CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "qml/*.qml")
+	foreach(qml_file IN LISTS qml_files)
+		file(RELATIVE_PATH resource_path "${CMAKE_CURRENT_SOURCE_DIR}/qml" "${CMAKE_CURRENT_SOURCE_DIR}/${qml_file}")
+		set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${resource_path}")
+	endforeach()
+	qt_add_qml_module(nasti_designer URI Binarizer VERSION 1.0 QML_FILES ${qml_files})
 	target_compile_definitions(nasti_designer PRIVATE BINARIZER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 	target_link_libraries(nasti_designer PRIVATE binarization_core Qt6::Quick Qt6::QuickControls2 Qt6::Concurrent)
 	if(BUILD_APP_PACKAGE)

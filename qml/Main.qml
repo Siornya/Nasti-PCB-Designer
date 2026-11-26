@@ -10,13 +10,26 @@ ApplicationWindow {
 	height: 800
 	minimumWidth: 1080
 	minimumHeight: 740
-	property url projectFile
-	title: projectFile.toString().length ? controller.localPath(projectFile) + " — NastiDesigner" : "NastiDesigner"
+	title: (controller.modified ? "* " : "") + (projectFlow.projectFile.toString().length
+		? controller.localPath(projectFlow.projectFile) + " — NastiDesigner" : "NastiDesigner")
+	onClosing: event => projectFlow.handleClosing(event)
+	ProjectFlow {
+		id: projectFlow
+		editorWindow: window
+		projectController: controller
+		pendingPreview: window.pendingPreview
+		onProjectOpened: file => {
+			sourceFile = controller.selectedSourceUrl
+			applySelectedParameters()
+			showingOriginal = false
+			automaticOutput = true
+			outputPath.text = controller.sourceDirectory(file)
+		}
+	}
 	menuBar: AppMenuBar {
 		editorWindow: window
 		projectController: controller
-		openDialog: openProjectDialog
-		saveDialog: saveProjectDialog
+		documentFlow: projectFlow
 		interactionEnabled: !window.pendingPreview && !comparison.visible
 	}
 	font.pixelSize: 15
@@ -346,29 +359,6 @@ ApplicationWindow {
 		validator: DoubleValidator { bottom: 0; decimals: 2; notation: DoubleValidator.StandardNotation }
 	}
 	FileDialog {
-		id: openProjectDialog
-		title: "打开工程"
-		nameFilters: ["NastiDesigner 工程 (*.nasti)"]
-		onAccepted: {
-			if (controller.openProject(selectedFile)) {
-				window.projectFile = selectedFile
-				window.sourceFile = controller.selectedSourceUrl
-				window.applySelectedParameters()
-				window.showingOriginal = false
-				window.automaticOutput = true
-				outputPath.text = controller.sourceDirectory(selectedFile)
-			}
-		}
-	}
-	FileDialog {
-		id: saveProjectDialog
-		title: "保存工程"
-		fileMode: FileDialog.SaveFile
-		nameFilters: ["NastiDesigner 工程 (*.nasti)"]
-		defaultSuffix: "nasti"
-		onAccepted: if (controller.saveProject(selectedFile)) window.projectFile = selectedFile
-	}
-	FileDialog {
 		id: openDialog
 		title: "选择图片"
 		nameFilters: ["图片 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)", "所有文件 (*)"]
@@ -390,6 +380,14 @@ ApplicationWindow {
 		nameFilters: ["PNG 图片 (*.png)"]
 		defaultSuffix: "png"
 		onAccepted: controller.save(selectedFile, grayscale)
+	}
+	FileDialog {
+		id: pcbFile
+		title: "保存 PCB 文件"
+		fileMode: FileDialog.SaveFile
+		nameFilters: ["嘉立创 EDA 工程 (*.epro2)"]
+		defaultSuffix: "epro2"
+		onAccepted: controller.generatePcb(selectedFile)
 	}
 	FileDialog {
 		id: reliefFile
@@ -998,7 +996,10 @@ ApplicationWindow {
 			AppButton {
 				text: "生成PCB文件"
 				enabled: !controller.busy && !window.pendingPreview && controller.hasExportableLayers
-				onClicked: controller.generatePcb(window.sourceFile, outputPath.text)
+				onClicked: {
+					pcbFile.selectedFile = controller.suggestedPcbFile(window.sourceFile, outputPath.text)
+					pcbFile.open()
+				}
 			}
 		}
 		Label { text: window.pendingPreview ? "正在更新预览…" : controller.status; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: 13 }

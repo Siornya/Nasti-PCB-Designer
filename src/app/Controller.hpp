@@ -27,6 +27,7 @@ private:
 
 class Controller : public QObject {
 	Q_OBJECT
+	Q_PROPERTY(bool modified READ modified NOTIFY changed)
 	Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
 	Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
 	Q_PROPERTY(bool busy READ busy NOTIFY changed)
@@ -47,6 +48,7 @@ class Controller : public QObject {
 public:
 	explicit Controller(ImageStore* images, QObject* parent = nullptr);
 	~Controller() override;
+	bool modified() const { return editId != savedEditId; }
 	bool canUndo() const { return !active && !past.empty(); }
 	bool canRedo() const { return !active && !future.empty(); }
 	Q_INVOKABLE void undo();
@@ -88,7 +90,8 @@ public:
 	Q_INVOKABLE void exportLithophane(const QUrl& destination, double width, double thin, double thick);
 	Q_INVOKABLE bool saveProject(const QUrl& destination);
 	Q_INVOKABLE bool openProject(const QUrl& source);
-	Q_INVOKABLE void generatePcb(const QUrl& source, const QString& directory);
+	Q_INVOKABLE QUrl suggestedPcbFile(const QUrl& source, const QString& directory) const;
+	Q_INVOKABLE void generatePcb(const QUrl& destination);
 signals:
 	void changed();
 private:
@@ -124,7 +127,9 @@ private:
 		int width, height;
 		QString color, side;
 		int frontSelection, backSelection;
+		quint64 editId;
 	};
+	quint64 editId = 0, savedEditId = 0, nextEditId = 1;
 	std::vector<Snapshot> past, future;
 	Snapshot snapshot() const;
 	void recordEdit();

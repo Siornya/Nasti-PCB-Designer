@@ -10,9 +10,8 @@
 | --- | --- | --- | --- |
 | Windows | x64 | `nasti-designer-windows-x64.exe` | 运行安装程序，安装后从开始菜单启动 |
 | macOS | Apple Silicon / ARM64 | `nasti-designer-macos-arm64.dmg` | 打开后将 `.app` 拖入 Applications |
-| Linux | x64 | `nasti-designer-linux-x64.AppImage` | 赋予执行权限后运行，无需解压 |
 
-下载文件已包含运行所需依赖，无需另装 Qt 或 Python。Linux 下载后首次运行可执行 `chmod +x nasti-designer-linux-x64.AppImage`；没有 FUSE 时可用 `APPIMAGE_EXTRACT_AND_RUN=1 ./nasti-designer-linux-x64.AppImage`。Linux 需要兼容 Ubuntu 24.04 的系统和桌面图形环境；macOS 为临时签名，没有 Apple 开发者签名或公证。
+下载文件已包含运行所需依赖，无需另装 Qt 或 Python。
 
 ## 功能
 

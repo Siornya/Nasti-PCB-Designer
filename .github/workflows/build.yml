@@ -36,10 +36,6 @@ jobs:
                       runner: macos-15
                       qt-arch: clang_64
                       extension: dmg
-                    - platform: linux-x64
-                      runner: ubuntu-24.04
-                      qt-arch: linux_gcc_64
-                      extension: AppImage
         defaults:
             run:
                 shell: bash
@@ -78,24 +74,12 @@ jobs:
                   choco install nsis --no-progress -y
                   echo 'C:\Program Files (x86)\NSIS' >> "$GITHUB_PATH"
 
-            - name: Install Linux packaging tools
-              if: runner.os == 'Linux'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y xvfb squashfs-tools adwaita-icon-theme
-                  mkdir -p build/tools
-                  curl --fail --location --retry 3 \
-                      https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
-                      --output build/tools/appimagetool.AppImage
-                  echo 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  build/tools/appimagetool.AppImage' | sha256sum --check
-                  chmod +x build/tools/appimagetool.AppImage
-
             - name: Cache OpenCV
               id: opencv-cache
               uses: actions/cache@v4
               with:
                   path: build/deps/opencv
-                  key: opencv-static-${{ env.OPENCV_VERSION }}-${{ matrix.runner }}-${{ runner.arch }}-v2
+                  key: opencv-static-${{ env.OPENCV_VERSION }}-${{ matrix.runner }}-${{ runner.arch }}-v3
 
             - name: Download OpenCV source
               if: steps.opencv-cache.outputs.cache-hit != 'true'
@@ -125,7 +109,7 @@ jobs:
                       -DBUILD_JAVA=OFF -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF \
                       -DWITH_JPEG=OFF -DWITH_PNG=OFF -DWITH_TIFF=OFF -DWITH_WEBP=OFF \
                       -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF \
-                      -DWITH_PROTOBUF=OFF \
+                      -DWITH_PROTOBUF=OFF -DWITH_ADE=OFF \
                       -DWITH_LAPACK=OFF -DWITH_TBB=OFF -DWITH_OPENMP=OFF
                   cmake --build build/opencv-build --parallel 3
                   cmake --install build/opencv-build
@@ -167,12 +151,7 @@ jobs:
                   fi
 
             - name: Verify bundled application
-              run: |
-                  if [[ "$RUNNER_OS" == "Linux" ]]; then
-                      xvfb-run -a python scripts/package_app.py --package-dir build/package
-                  else
-                      python scripts/package_app.py --package-dir build/package
-                  fi
+              run: python scripts/package_app.py --package-dir build/package
 
             - name: Create Windows installer
               if: runner.os == 'Windows'
@@ -205,52 +184,6 @@ jobs:
                   hdiutil create -volname "NastiDesigner" -srcfolder build/dmg \
                       -ov -format UDZO dist/nasti-designer-macos-arm64.dmg
 
-            - name: Create Linux AppImage
-              if: runner.os == 'Linux'
-              run: |
-                  python - <<'PYCODE'
-                  from pathlib import Path
-                  import shutil
-                  appdir = Path('build/Nasti.AppDir')
-                  shutil.copytree('build/package', appdir / 'usr', symlinks=True)
-                  launcher = appdir / 'AppRun'
-                  launcher.write_text('#!/bin/sh\napp_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1\nexport LD_LIBRARY_PATH="$app_dir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$app_dir/usr/bin/nasti-designer" "$@"\n')
-                  launcher.chmod(0o755)
-                  (appdir / 'nasti-designer.desktop').write_text('[Desktop Entry]\nType=Application\nName=NastiDesigner\nExec=nasti-designer\nIcon=nasti-designer\nCategories=Graphics;Engineering;\nTerminal=false\n')
-                  # AppImage requires an icon; use the system generic executable icon for now.
-                  icons = Path('/usr/share/icons/Adwaita')
-                  candidates = sorted(icons.glob('**/application-x-executable.png')) + sorted(icons.glob('**/application-x-executable*.svg'))
-                  if not candidates:
-                      raise SystemExit('System generic executable icon not found')
-                  icon = appdir / ('nasti-designer' + candidates[0].suffix)
-                  shutil.copyfile(candidates[0], icon)
-                  (appdir / '.DirIcon').symlink_to(icon.name)
-                  PYCODE
-                  mkdir -p dist
-                  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 build/tools/appimagetool.AppImage \
-                      --no-appstream build/Nasti.AppDir dist/nasti-designer-linux-x64.AppImage
-                  chmod +x dist/nasti-designer-linux-x64.AppImage
-
-            - name: Verify Linux AppImage
-              if: runner.os == 'Linux'
-              run: |
-                  xvfb-run -a python - <<'PYCODE'
-                  from pathlib import Path
-                  import subprocess
-                  import sys
-                  import tempfile
-                  sys.path.insert(0, 'scripts')
-                  from package_app import package_environment
-                  environment = package_environment()
-                  environment['APPIMAGE_EXTRACT_AND_RUN'] = '1'
-                  image = Path('dist/nasti-designer-linux-x64.AppImage').resolve()
-                  with tempfile.TemporaryDirectory() as directory:
-                      screenshot = Path(directory) / 'smoke.png'
-                      subprocess.run([str(image), '--smoke-screenshot', str(screenshot)], cwd=directory, env=environment, check=True, timeout=120)
-                      if not screenshot.is_file() or screenshot.stat().st_size == 0:
-                          raise SystemExit('AppImage did not render its QML scene')
-                  PYCODE
-
             - name: Verify Windows installed application
               if: runner.os == 'Windows'
               shell: pwsh
@@ -281,7 +214,7 @@ jobs:
                   compression-level: 0
 
     release:
-        name: Publish three platform downloads
+        name: Publish Windows and macOS downloads
         needs: build
         runs-on: ubuntu-24.04
         permissions:
@@ -303,7 +236,6 @@ jobs:
                   files=(
                       installers/nasti-designer-windows-x64.exe
                       installers/nasti-designer-macos-arm64.dmg
-                      installers/nasti-designer-linux-x64.AppImage
                   )
                   for file in "${files[@]}"; do test -s "$file"; done
                   created=false

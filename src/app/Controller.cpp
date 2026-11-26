@@ -53,17 +53,19 @@ Controller::~Controller() {
 }
 Controller::Snapshot Controller::snapshot() const {
 	return {artworkLayers, minimumCanvasWidth, minimumCanvasHeight, maskColor,
-		activeSideValue, frontSelectedLayerId, backSelectedLayerId};
+		activeSideValue, frontSelectedLayerId, backSelectedLayerId, editId};
 }
 
 void Controller::recordEdit() {
 	constexpr size_t historyLimit = 32;
 	if (past.size() >= historyLimit) past.erase(past.begin());
 	past.push_back(snapshot());
+	editId = nextEditId++;
 	future.clear();
 }
 
 void Controller::restore(Snapshot state) {
+	editId = state.editId;
 	artworkLayers = std::move(state.layers);
 	minimumCanvasWidth = state.width;
 	minimumCanvasHeight = state.height;

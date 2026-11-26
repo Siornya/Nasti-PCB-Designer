@@ -192,17 +192,28 @@ void Controller::exportLithophane(const QUrl& destination, double width, double 
 	emit changed();
 }
 
-void Controller::generatePcb(const QUrl& source, const QString& directory) {
+QUrl Controller::suggestedPcbFile(const QUrl& source, const QString& directory) const {
+	QString projectSource = source.toLocalFile();
+	if (!QFileInfo::exists(projectSource) && !artworkLayers.empty())
+		projectSource = artworkLayers.front().sourcePath;
+	const QFileInfo sourceFile(projectSource);
+	const QDir folder(directory.isEmpty() ? sourceFile.absolutePath() : directory);
+	return QUrl::fromLocalFile(folder.absoluteFilePath(sourceFile.completeBaseName() + ".epro2"));
+}
+
+void Controller::generatePcb(const QUrl& destination) {
 	if (active) return;
 	if (!hasExportableLayers()) {
 		message = QStringLiteral("没有可用于生成 PCB 文件的可见图层");
 		emit changed();
 		return;
 	}
-	QString projectSource = source.toLocalFile();
-	if (!QFileInfo::exists(projectSource) && !artworkLayers.empty())
-		projectSource = artworkLayers.front().sourcePath;
-	const QFileInfo sourceFile(projectSource);
+	const QFileInfo target(destination.toLocalFile());
+	if (!destination.isLocalFile() || target.suffix().compare("epro2", Qt::CaseInsensitive) != 0) {
+		message = QStringLiteral("请选择扩展名为 .epro2 的本地文件");
+		emit changed();
+		return;
+	}
 	QString root = QStringLiteral(BINARIZER_SOURCE_DIR);
 	QString exporter;
 	const QDir applicationDirectory(QCoreApplication::applicationDirPath());
@@ -240,7 +251,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		emit changed();
 		return;
 	}
-	QDir outputDirectory(directory.isEmpty() ? sourceFile.absolutePath() : directory);
+	const QDir outputDirectory = target.absoluteDir();
 	if (!outputDirectory.exists() && !QDir().mkpath(outputDirectory.absolutePath())) {
 		message = QStringLiteral("无法创建输出目录：%1").arg(outputDirectory.absolutePath());
 		emit changed();
@@ -254,7 +265,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		emit changed();
 		return;
 	}
-	pcbDestination = outputDirectory.filePath(sourceFile.completeBaseName() + QStringLiteral(".epro2"));
+	pcbDestination = target.absoluteFilePath();
 	pcbCancelled = false;
 	const QSize canvas = canvasSize();
 	QJsonArray exportedLayers;
@@ -309,7 +320,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	canvasSettings.insert(QStringLiteral("heightMm"), heightMm);
 	const QJsonObject manifestObject{
 		{QStringLiteral("canvas"), canvasSettings},
-		{QStringLiteral("projectName"), sourceFile.completeBaseName()},
+		{QStringLiteral("projectName"), target.completeBaseName()},
 		{QStringLiteral("solderMaskColor"), solderMaskPreviewColor(maskColor).name(QColor::HexRgb).toUpper()},
 		{QStringLiteral("layers"), exportedLayers}
 	};
@@ -383,6 +394,7 @@ bool Controller::saveProject(const QUrl& destination) {
 		}
 		ok = out.status() == QDataStream::Ok && file.commit();
 	}
+	if (ok) savedEditId = editId;
 	message = ok ? QStringLiteral("工程已保存：%1").arg(file.fileName()) : QStringLiteral("保存工程失败：%1").arg(file.errorString());
 	emit changed();
 	return ok;
@@ -437,6 +449,8 @@ bool Controller::openProject(const QUrl& source) {
 		state.layers.push_back(std::move(layer));
 	}
 	if (in.status() != QDataStream::Ok || !in.atEnd()) return fail(QStringLiteral("工程数据不完整或格式异常"));
+	state.editId = nextEditId++;
+	savedEditId = state.editId;
 	nextLayerId = nextId;
 	past.clear();
 	future.clear();

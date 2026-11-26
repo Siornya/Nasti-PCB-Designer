@@ -1,13 +1,11 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 
 MenuBar {
 	id: menuBar
 	required property ApplicationWindow editorWindow
 	required property QtObject projectController
-	required property FileDialog openDialog
-	required property FileDialog saveDialog
+	required property ProjectFlow documentFlow
 	required property bool interactionEnabled
 	readonly property var translations: ({
 		zh: {
@@ -61,17 +59,13 @@ MenuBar {
 	Menu {
 		title: menuBar.labels.file
 		enabled: !menuBar.projectController.busy && menuBar.interactionEnabled
-		Action { text: menuBar.labels.openProject; shortcut: StandardKey.Open; onTriggered: menuBar.openDialog.open() }
+		Action { text: menuBar.labels.openProject; shortcut: StandardKey.Open; onTriggered: menuBar.documentFlow.openProject() }
 		Action {
 			text: menuBar.labels.saveProject
 			shortcut: StandardKey.Save
-			onTriggered: {
-				if (menuBar.editorWindow.projectFile.toString().length)
-					menuBar.projectController.saveProject(menuBar.editorWindow.projectFile)
-				else menuBar.saveDialog.open()
-			}
+			onTriggered: menuBar.documentFlow.saveProject()
 		}
-		Action { text: menuBar.labels.saveProjectAs; shortcut: StandardKey.SaveAs; onTriggered: menuBar.saveDialog.open() }
+		Action { text: menuBar.labels.saveProjectAs; shortcut: StandardKey.SaveAs; onTriggered: menuBar.documentFlow.saveProjectAs() }
 	}
 	Menu {
 		title: menuBar.labels.exportMenu

@@ -25,7 +25,7 @@ def package_environment() -> dict[str, str]:
 	if qt_root:
 		environment["PATH"] = os.pathsep.join(entry for entry in environment["PATH"].split(os.pathsep)
 			if not str(Path(entry)).lower().startswith(str(Path(qt_root)).lower()))
-	environment["QT_QPA_PLATFORM"] = "windows" if sys.platform == "win32" else "cocoa" if sys.platform == "darwin" else "xcb"
+	environment["QT_QPA_PLATFORM"] = {"win32": "windows", "darwin": "cocoa"}[sys.platform]
 	environment["QT_QUICK_BACKEND"] = "software"
 
 	return environment
@@ -43,7 +43,7 @@ def main() -> None:
 		app = bundle / "MacOS/nasti-designer"
 		exporter_directory = bundle / "Resources/exporter"
 	else:
-		app = package / "bin" / ("nasti-designer.exe" if windows else "nasti-designer")
+		app = package / "bin/nasti-designer.exe"
 		exporter_directory = package / "exporter"
 	exporter = exporter_directory / ("pcb-exporter.exe" if windows else "pcb-exporter")
 	for executable in (app, exporter):
